@@ -1,0 +1,165 @@
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --border: #e3e6eb;
+  --text: #1d2330;
+  --muted: #6b7280;
+  --accent: #2f5bea;
+  --accent-soft: #e8eefe;
+  --up: #d1352b;      /* 국내 관례: 증가 = 빨강 */
+  --down: #2563eb;    /* 감소 = 파랑 */
+  --warn-bg: #fff4e5;
+  --warn: #b45309;
+  --radius: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c;
+    --surface: #1d2128;
+    --border: #2d333d;
+    --text: #e6e8eb;
+    --muted: #9aa3af;
+    --accent: #7c9cff;
+    --accent-soft: #24304d;
+    --up: #ff7b72;
+    --down: #79a8ff;
+    --warn-bg: #3a2a12;
+    --warn: #f0b35a;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  font-size: 14px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 32px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.topbar h1 { margin: 0; font-size: 20px; }
+.sub { margin: 4px 0 0; color: var(--muted); }
+
+.dept-picker { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+.dept-picker select { min-width: 200px; }
+
+main { padding: 24px 32px 40px; max-width: 1400px; margin: 0 auto; }
+
+.info-row { display: flex; gap: 32px; flex-wrap: wrap; margin-bottom: 16px; }
+.info { display: flex; align-items: baseline; gap: 8px; }
+.info-label { color: var(--muted); }
+.info-note { color: var(--muted); font-size: 12px; }
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tile span { color: var(--muted); font-size: 12px; }
+.tile strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+.tile em { font-style: normal; font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; white-space: nowrap; }
+th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; background: var(--bg); }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr.dirty { background: var(--accent-soft); transition: background 0.6s; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.grade-col { width: 110px; }
+td select { width: 96px; }
+td select.empty { color: var(--muted); }
+.muted { color: var(--muted); }
+.pos { color: var(--up); }
+.neg { color: var(--down); }
+
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  margin-left: 4px;
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.org-chip {
+  display: inline-block;
+  min-width: 22px;
+  text-align: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.footer-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.distribution { display: flex; gap: 8px; flex-wrap: wrap; }
+.dist-item {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.dist-item.over { border-color: var(--warn); background: var(--warn-bg); color: var(--warn); }
+.actions { display: flex; align-items: center; gap: 12px; }
+.status-msg { color: var(--muted); font-size: 12px; }
+.status-msg.error { color: var(--up); }
+
+button {
+  font: inherit;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 18px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+@media (max-width: 720px) {
+  .topbar { flex-direction: column; align-items: flex-start; padding: 16px; }
+  main { padding: 16px; }
+}

@@ -78,6 +78,26 @@ CREATE TABLE grade_distribution_guide (        -- (선택) 등급별 배분 가�
     PRIMARY KEY (cycle_id, grade_id)
 );
 
+-- 상위평가(조직평가) 등급 – 부서/본부 단위 평가. 개인 성과인상률 결정에 사용
+CREATE TABLE org_grade (
+    id          SERIAL PRIMARY KEY,
+    cycle_id    INT NOT NULL REFERENCES evaluation_cycle(id),
+    code        VARCHAR(5)  NOT NULL,
+    name        VARCHAR(30) NOT NULL,
+    sort_order  INT NOT NULL,
+    UNIQUE (cycle_id, code),
+    UNIQUE (cycle_id, sort_order)
+);
+
+-- 부서별 상위평가 결과. 부서에 값이 없으면 가장 가까운 상위 조직의 결과를 따른다
+-- (예: 팀 평가가 없으면 소속 본부 평가 적용) → fn_dept_org_grade()
+CREATE TABLE department_evaluation (
+    cycle_id       INT NOT NULL REFERENCES evaluation_cycle(id),
+    department_id  INT NOT NULL REFERENCES department(id),
+    org_grade_id   INT NOT NULL REFERENCES org_grade(id),
+    PRIMARY KEY (cycle_id, department_id)
+);
+
 -- ---------------------------------------------------------------------
 -- 3. 보상 정책 (주기별 – 매년 정책이 바뀌어도 과거 결과 재현 가능)
 -- ---------------------------------------------------------------------
@@ -89,21 +109,25 @@ CREATE TABLE comp_policy (                     -- 주기 공통 계산 파라미
     incentive_base         VARCHAR(10) NOT NULL DEFAULT 'CURRENT'
                            CHECK (incentive_base IN ('CURRENT',  -- 당해 연봉 기준
                                                      'NEXT')),   -- 차년도 연봉 기준
-    company_payout_factor  NUMERIC(6,4) NOT NULL DEFAULT 1.0    -- 전사 성과 지급률
+    company_payout_factor  NUMERIC(6,4) NOT NULL DEFAULT 1.0,   -- 전사 성과 지급률
+    base_up_rate           NUMERIC(6,4) NOT NULL DEFAULT 0      -- 기본인상률(전원 공통)
 );
 
--- 평가등급 → 연봉등급(인상률) / 인센티브 매핑
--- job_level_id 가 NULL 이면 전 직급 공통 규칙, 값이 있으면 해당 직급 전용 규칙(우선 적용)
+-- 개인 평가등급 × 상위평가 등급 → 연봉등급 / 성과인상률 / 인센티브 매트릭스
+--   총인상률 = comp_policy.base_up_rate(기본인상률) + perf_raise_rate(성과인상률)
+--   org_grade_id / job_level_id 가 NULL 이면 "전체 공통" 규칙.
+--   적용 우선순위: 상위평가 지정 > 공통, 그다음 직급 지정 > 공통
 CREATE TABLE comp_rule (
     id                      SERIAL PRIMARY KEY,
     cycle_id                INT NOT NULL REFERENCES evaluation_cycle(id),
     grade_id                INT NOT NULL REFERENCES evaluation_grade(id),
+    org_grade_id            INT REFERENCES org_grade(id),
     job_level_id            INT REFERENCES job_level(id),
     pay_grade_code          VARCHAR(10),                    -- 연봉등급 코드 (예: P1~P5)
-    raise_rate              NUMERIC(6,4) NOT NULL,          -- 기본 인상률
+    perf_raise_rate         NUMERIC(6,4) NOT NULL,          -- 성과인상률
     incentive_rate          NUMERIC(6,4) NOT NULL DEFAULT 0,-- 인센티브율 (기준연봉 대비)
     incentive_fixed_amount  BIGINT       NOT NULL DEFAULT 0,-- 정액 인센티브
-    UNIQUE NULLS NOT DISTINCT (cycle_id, grade_id, job_level_id)
+    UNIQUE NULLS NOT DISTINCT (cycle_id, grade_id, org_grade_id, job_level_id)
 );
 
 CREATE TABLE salary_band (                     -- (선택) 직급별 연봉 상·하한
@@ -186,13 +210,33 @@ RETURNS BIGINT AS $$
             END * unit)::BIGINT;
 $$ LANGUAGE sql IMMUTABLE;
 
--- 특정 직원 × 특정 등급의 차년도 처우 계산 (What-if 시뮬레이션의 단일 진입점)
---   부서장이 드롭다운에서 등급을 바꿀 때마다 이 함수를 호출하면
---   저장 전에도 실시간으로 결과를 보여줄 수 있다.
+-- 부서에 적용되는 상위평가 등급: 자기 부서 → 상위 부서 순으로 가장 가까운 평가 결과
+CREATE FUNCTION fn_dept_org_grade(p_cycle_id INT, p_department_id INT)
+RETURNS INT AS $$
+    WITH RECURSIVE up AS (
+        SELECT id, parent_id, 0 AS depth FROM department WHERE id = p_department_id
+        UNION ALL
+        SELECT d.id, d.parent_id, up.depth + 1
+          FROM department d JOIN up ON d.id = up.parent_id
+    )
+    SELECT de.org_grade_id
+      FROM up
+      JOIN department_evaluation de
+        ON de.department_id = up.id AND de.cycle_id = p_cycle_id
+     ORDER BY up.depth
+     LIMIT 1;
+$$ LANGUAGE sql STABLE;
+
+-- 특정 직원 × 특정 등급의 차년도 처우 계산 (시뮬레이션의 단일 진입점)
+--   총인상률 = 기본인상률 + 성과인상률(개인등급 × 상위평가 매트릭스)
+--   세부 로직이 확정되면 이 함수만 수정하면 화면/확정 처리에 그대로 반영된다.
 CREATE FUNCTION fn_simulate_comp(p_cycle_id INT, p_employee_id INT, p_grade_id INT)
 RETURNS TABLE (
+    org_grade_code      VARCHAR,
     grade_code          VARCHAR,
     pay_grade_code      VARCHAR,
+    base_up_rate        NUMERIC,
+    perf_raise_rate     NUMERIC,
     raise_rate          NUMERIC,
     cur_base_salary     BIGINT,
     cur_incentive       BIGINT,
@@ -207,21 +251,24 @@ RETURNS TABLE (
 ) AS $$
     WITH ctx AS (
         SELECT c.eval_year, e.job_level_id, g.code AS grade_code,
+               og.id AS org_grade_id, og.code AS org_grade_code,
                p.rounding_unit, p.rounding_mode, p.incentive_base,
-               p.company_payout_factor
+               p.company_payout_factor, p.base_up_rate
           FROM evaluation_cycle c
           JOIN comp_policy p       ON p.cycle_id = c.id
           JOIN employee e          ON e.id = p_employee_id
           JOIN evaluation_grade g  ON g.id = p_grade_id AND g.cycle_id = c.id
+          LEFT JOIN org_grade og   ON og.id = fn_dept_org_grade(c.id, e.department_id)
          WHERE c.id = p_cycle_id
     ),
-    rule AS (                                   -- 직급 전용 규칙 우선, 없으면 공통 규칙
+    rule AS (
         SELECT r.*
           FROM comp_rule r, ctx
          WHERE r.cycle_id = p_cycle_id
            AND r.grade_id = p_grade_id
+           AND (r.org_grade_id = ctx.org_grade_id OR r.org_grade_id IS NULL)
            AND (r.job_level_id = ctx.job_level_id OR r.job_level_id IS NULL)
-         ORDER BY r.job_level_id NULLS LAST
+         ORDER BY r.org_grade_id NULLS LAST, r.job_level_id NULLS LAST
          LIMIT 1
     ),
     cur AS (
@@ -231,10 +278,11 @@ RETURNS TABLE (
            AND ec.comp_year = ctx.eval_year
     ),
     calc AS (
-        SELECT ctx.*, rule.pay_grade_code, rule.raise_rate, rule.incentive_rate,
-               rule.incentive_fixed_amount,
+        SELECT ctx.*, rule.pay_grade_code, rule.perf_raise_rate,
+               ctx.base_up_rate + rule.perf_raise_rate AS raise_rate,
+               rule.incentive_rate, rule.incentive_fixed_amount,
                cur.base_salary AS cur_base, cur.incentive_amount AS cur_inc,
-               fn_round_amount(cur.base_salary * (1 + rule.raise_rate),
+               fn_round_amount(cur.base_salary * (1 + ctx.base_up_rate + rule.perf_raise_rate),
                                ctx.rounding_unit, ctx.rounding_mode) AS raw_next_base,
                b.min_salary, b.max_salary
           FROM ctx
@@ -258,7 +306,8 @@ RETURNS TABLE (
                    rounding_unit, rounding_mode) AS next_inc
           FROM banded
     )
-    SELECT grade_code, pay_grade_code, raise_rate,
+    SELECT org_grade_code, grade_code, pay_grade_code,
+           base_up_rate, perf_raise_rate, raise_rate,
            cur_base, cur_inc, cur_base + cur_inc,
            next_base, next_inc, next_base + next_inc,
            next_base - cur_base,
@@ -268,7 +317,7 @@ RETURNS TABLE (
       FROM final;
 $$ LANGUAGE sql STABLE;
 
--- 부서장 화면용: 입력된 평가 기준 실시간 처우 조회
+-- 저장된 평가 기준 처우 조회 (부서 현황/확정 처리용)
 CREATE VIEW v_comp_simulation AS
 SELECT ev.id            AS evaluation_id,
        ev.cycle_id,
@@ -294,8 +343,11 @@ SELECT ev.id            AS evaluation_id,
 -- ---------------------------------------------------------------------
 CREATE TABLE comp_result (                     -- 확정 시점의 계산 결과 (불변)
     evaluation_id      INT PRIMARY KEY REFERENCES evaluation(id),
+    org_grade_code     VARCHAR(5),
     grade_code         VARCHAR(5)  NOT NULL,
     pay_grade_code     VARCHAR(10),
+    base_up_rate       NUMERIC(6,4) NOT NULL,
+    perf_raise_rate    NUMERIC(6,4) NOT NULL,
     raise_rate         NUMERIC(6,4) NOT NULL,
     cur_base_salary    BIGINT NOT NULL,
     cur_incentive      BIGINT NOT NULL,
@@ -325,10 +377,12 @@ BEGIN
     END IF;
 
     INSERT INTO comp_result
-          (evaluation_id, grade_code, pay_grade_code, raise_rate,
+          (evaluation_id, org_grade_code, grade_code, pay_grade_code,
+           base_up_rate, perf_raise_rate, raise_rate,
            cur_base_salary, cur_incentive, next_base_salary, next_incentive,
            delta_total, band_capped)
-    SELECT evaluation_id, grade_code, pay_grade_code, raise_rate,
+    SELECT evaluation_id, org_grade_code, grade_code, pay_grade_code,
+           base_up_rate, perf_raise_rate, raise_rate,
            cur_base_salary, cur_incentive, next_base_salary, next_incentive,
            delta_total, band_capped
       FROM v_comp_simulation

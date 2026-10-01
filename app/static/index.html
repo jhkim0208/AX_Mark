@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>업적평가 · 보상 시뮬레이션</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>업적평가 · 보상 시뮬레이션</h1>
+      <p class="sub" id="cycle-label">불러오는 중…</p>
+    </div>
+    <label class="dept-picker">
+      <span>부서</span>
+      <select id="dept-select"></select>
+    </label>
+  </header>
+
+  <main>
+    <section class="info-row">
+      <div class="info">
+        <span class="info-label">평가자(부서장)</span>
+        <strong id="evaluator">-</strong>
+      </div>
+      <div class="info">
+        <span class="info-label">상위평가</span>
+        <strong id="org-grade">-</strong>
+        <span class="info-note" id="org-grade-note"></span>
+      </div>
+      <div class="info">
+        <span class="info-label">기본인상률</span>
+        <strong id="base-up">-</strong>
+        <span class="info-note">+ 성과인상률(개인등급 × 상위평가)</span>
+      </div>
+    </section>
+
+    <section class="tiles">
+      <div class="tile"><span>입력 현황</span><strong id="t-progress">-</strong></div>
+      <div class="tile"><span>현재 연봉 합계</span><strong id="t-cur">-</strong></div>
+      <div class="tile"><span>예상 차년도 연봉 합계</span><strong id="t-next">-</strong><em id="t-next-delta"></em></div>
+      <div class="tile"><span>예상 인센티브 합계</span><strong id="t-inc">-</strong><em id="t-inc-delta"></em></div>
+      <div class="tile"><span>평균 인상률</span><strong id="t-rate">-</strong></div>
+    </section>
+
+    <section class="card">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>사번</th>
+              <th>성명</th>
+              <th>직급</th>
+              <th>상위평가</th>
+              <th class="num">현재 연봉</th>
+              <th class="grade-col">평가등급</th>
+              <th class="num">성과인상률</th>
+              <th class="num">총인상률</th>
+              <th class="num">차년도 연봉</th>
+              <th class="num">연봉 증감</th>
+              <th class="num">예상 인센티브</th>
+              <th class="num">총보상 증감</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="footer-row">
+      <div id="distribution" class="distribution"></div>
+      <div class="actions">
+        <span id="status-msg" class="status-msg"></span>
+        <button id="submit-btn" type="button">평가 제출</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
