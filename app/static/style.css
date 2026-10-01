@@ -116,16 +116,6 @@ td select.empty { color: var(--muted); }
   background: var(--warn-bg);
   color: var(--warn);
 }
-.org-chip {
-  display: inline-block;
-  min-width: 22px;
-  text-align: center;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 600;
-}
 
 .footer-row {
   display: flex;

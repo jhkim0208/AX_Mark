@@ -72,7 +72,6 @@ MEMBERS_SQL = f"""
            e.name,
            jl.name           AS job_level,
            md.name           AS department_name,
-           og.code           AS org_grade_code,
            ec.base_salary    AS cur_base_salary,
            ec.incentive_amount AS cur_incentive,
            g.code            AS grade_code,
@@ -84,8 +83,6 @@ MEMBERS_SQL = f"""
       JOIN employee e    ON e.id = t.id
       JOIN job_level jl  ON jl.id = e.job_level_id
       JOIN department md ON md.id = e.department_id
-      LEFT JOIN org_grade og
-             ON og.id = fn_dept_org_grade(%(cycle)s, e.department_id)
       LEFT JOIN employee_compensation ec
              ON ec.employee_id = e.id AND ec.comp_year = %(year)s
       LEFT JOIN evaluation ev
@@ -106,25 +103,6 @@ def _members(cur, cycle, dept_id: int, employee_id: int | None = None):
     return cur.fetchall()
 
 
-def _org_grade_source(cur, cycle_id: int, dept_id: int):
-    cur.execute(
-        """WITH RECURSIVE up AS (
-               SELECT id, name, parent_id, 0 AS depth FROM department WHERE id = %(dept)s
-               UNION ALL
-               SELECT d.id, d.name, d.parent_id, up.depth + 1
-                 FROM department d JOIN up ON d.id = up.parent_id)
-           SELECT og.code, og.name, up.name AS source_department, up.depth > 0 AS inherited
-             FROM up
-             JOIN department_evaluation de
-               ON de.department_id = up.id AND de.cycle_id = %(cycle)s
-             JOIN org_grade og ON og.id = de.org_grade_id
-            ORDER BY up.depth
-            LIMIT 1""",
-        {"dept": dept_id, "cycle": cycle_id},
-    )
-    return cur.fetchone()
-
-
 def _editable(cycle, member) -> bool:
     return cycle["status"] == "OPEN" and member["evaluation_status"] in (None, "DRAFT")
 
@@ -142,7 +120,8 @@ def context(cycle_id: int | None = None):
     with get_pool().connection() as conn, conn.cursor() as cur:
         cycle = _cycle(cur, cycle_id)
         cur.execute(
-            """SELECT g.code, g.name, gd.min_ratio, gd.max_ratio
+            """SELECT g.code, g.name, g.raise_sign, g.incentive_eligible,
+                      gd.min_ratio, gd.max_ratio
                  FROM evaluation_grade g
                  LEFT JOIN grade_distribution_guide gd ON gd.grade_id = g.id
                 WHERE g.cycle_id = %s ORDER BY g.sort_order""",
@@ -167,13 +146,11 @@ def sheet(dept_id: int, cycle_id: int | None = None):
         cycle = _cycle(cur, cycle_id)
         dept = _department(cur, dept_id)
         members = _members(cur, cycle, dept_id)
-        org_grade = _org_grade_source(cur, cycle["id"], dept_id)
     for m in members:
         m["editable"] = _editable(cycle, m)
     return {
         "cycle": cycle,
         "department": dept,
-        "org_grade": org_grade,
         "members": members,
         "can_submit": cycle["status"] == "OPEN"
         and bool(members)

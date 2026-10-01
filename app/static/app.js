@@ -41,21 +41,21 @@ function gradeSelect(m) {
 function rowHtml(m) {
   const sim = m.grade_code != null && m.next_base_salary != null;
   const cap = m.band_capped ? '<span class="badge" title="직급 연봉 밴드 상·하한 적용">밴드</span>' : "";
-  const org = m.org_grade_code
-    ? `<span class="org-chip">${m.org_grade_code}</span>`
-    : '<span class="muted">미확정</span>';
+  const grade = state.ctx.grades.find((g) => g.code === m.grade_code);
+  const incentive = !sim ? '<span class="muted">-</span>'
+    : grade && !grade.incentive_eligible ? '<span class="muted">미지급</span>'
+    : won(m.next_incentive);
   return `
     <td>${esc(m.emp_no)}</td>
     <td>${esc(m.name)}${m.department_name !== state.sheet.department.name ? ` <span class="muted">(${esc(m.department_name)})</span>` : ""}</td>
     <td>${esc(m.job_level)}</td>
-    <td>${org}</td>
     <td class="num">${won(m.cur_base_salary)}</td>
     <td>${gradeSelect(m)}</td>
     <td class="num">${sim ? pct(m.perf_raise_rate) : '<span class="muted">-</span>'}</td>
     <td class="num">${sim ? pct(m.raise_rate) : '<span class="muted">-</span>'}</td>
     <td class="num">${sim ? won(m.next_base_salary) + cap : '<span class="muted">-</span>'}</td>
     <td class="num">${sim ? signed(m.delta_base_salary) : '<span class="muted">-</span>'}</td>
-    <td class="num">${sim ? won(m.next_incentive) : '<span class="muted">-</span>'}</td>
+    <td class="num">${incentive}</td>
     <td class="num">${sim ? signed(m.delta_total) : '<span class="muted">-</span>'}</td>`;
 }
 
@@ -69,7 +69,7 @@ function renderRows() {
     tbody.appendChild(tr);
   }
   if (!state.sheet.members.length) {
-    tbody.innerHTML = '<tr><td colspan="12" class="muted">평가 대상자가 없습니다.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="muted">평가 대상자가 없습니다.</td></tr>';
   }
 }
 
@@ -110,15 +110,7 @@ function renderSummary() {
 }
 
 function renderHeader() {
-  const { department, org_grade } = state.sheet;
-  $("evaluator").textContent = department.head_name || "미지정";
-  if (org_grade) {
-    $("org-grade").textContent = `${org_grade.code} (${org_grade.name})`;
-    $("org-grade-note").textContent = org_grade.inherited ? `${org_grade.source_department} 결과 적용` : "";
-  } else {
-    $("org-grade").textContent = "미확정";
-    $("org-grade-note").textContent = "공통 규칙 적용";
-  }
+  $("evaluator").textContent = state.sheet.department.head_name || "미지정";
 }
 
 // ---------------------------------------------------------------------
@@ -176,6 +168,8 @@ async function init() {
   $("cycle-label").textContent =
     `${cycle.name} · ${statusLabel[cycle.status] || cycle.status} · ${cycle.eval_year + 1}년 처우 반영`;
   $("base-up").textContent = policy ? pct(policy.base_up_rate) : "-";
+  $("incentive-grades").textContent =
+    state.ctx.grades.filter((g) => g.incentive_eligible).map((g) => g.code).join("·") || "없음";
 
   const select = $("dept-select");
   const depth = (d) => (d.parent_id ? 1 + depth(departments.find((x) => x.id === d.parent_id)) : 0);

@@ -39,63 +39,34 @@ INSERT INTO evaluation_cycle (id, eval_year, name, status, start_date, end_date,
 VALUES (1, 2026, '2026년 업적평가', 'OPEN', '2026-11-01', '2026-12-15', '2027-01-01');
 ALTER SEQUENCE evaluation_cycle_id_seq RESTART WITH 2;
 
-INSERT INTO evaluation_grade (cycle_id, code, name, sort_order) VALUES
-    (1, 'S', '탁월', 1), (1, 'A', '우수', 2), (1, 'B', '보통', 3),
-    (1, 'C', '미흡', 4), (1, 'D', '부진', 5);
+-- 개인 평가등급: A·B·C 양수 / D 동결 / E 음수, 인센티브는 A·B 만 지급
+INSERT INTO evaluation_grade (cycle_id, code, name, sort_order, raise_sign, incentive_eligible) VALUES
+    (1, 'A', '탁월', 1, 'POSITIVE', true),
+    (1, 'B', '우수', 2, 'POSITIVE', true),
+    (1, 'C', '보통', 3, 'POSITIVE', false),
+    (1, 'D', '미흡', 4, 'ZERO',     false),
+    (1, 'E', '부진', 5, 'NEGATIVE', false);
 
 INSERT INTO grade_distribution_guide (cycle_id, grade_id, min_ratio, max_ratio)
 SELECT 1, g.id, v.min_ratio, v.max_ratio
   FROM evaluation_grade g
-  JOIN (VALUES ('S', NULL::numeric, 0.10), ('A', NULL, 0.25), ('B', 0.40, NULL))
+  JOIN (VALUES ('A', NULL::numeric, 0.10), ('B', NULL, 0.25), ('C', 0.40, NULL))
        AS v(code, min_ratio, max_ratio) ON v.code = g.code
  WHERE g.cycle_id = 1;
 
--- 상위평가(조직평가) 등급과 결과
-INSERT INTO org_grade (cycle_id, code, name, sort_order) VALUES
-    (1, 'S', '탁월', 1), (1, 'A', '우수', 2), (1, 'B', '보통', 3),
-    (1, 'C', '미흡', 4), (1, 'D', '부진', 5);
-
-INSERT INTO department_evaluation (cycle_id, department_id, org_grade_id)
-SELECT 1, v.dept, og.id
-  FROM (VALUES (1, 'A'),   -- 경영지원본부 A → 전략기획팀은 본부 결과(A)를 따름
-               (3, 'S'),   -- 인사팀은 팀 단위 평가 S 가 별도로 있음
-               (4, 'B'))   -- 개발본부 B → 플랫폼팀은 B 적용
-       AS v(dept, code)
-  JOIN org_grade og ON og.cycle_id = 1 AND og.code = v.code;
-
+-- ※ 아래 인상률·인센티브 수치는 모두 임시값 (세부 수치 확정 시 교체)
 INSERT INTO comp_policy (cycle_id, rounding_unit, rounding_mode, incentive_base,
                          company_payout_factor, base_up_rate)
-VALUES (1, 10000, 'FLOOR', 'CURRENT', 1.0, 0.0200);   -- 기본인상률 2%
+VALUES (1, 10000, 'FLOOR', 'CURRENT', 1.0, 0.0200);   -- 기본인상률 2% (임시)
 
--- 성과인상률 매트릭스 (행: 상위평가, 열: 개인평가)
---            S      A      B      C      D
---   S      7.0%   5.5%   4.0%   1.5%   0.0%
---   A      6.0%   4.5%   3.0%   1.0%   0.0%
---   B      5.0%   3.5%   2.0%   0.5%   0.0%
---   C      4.0%   2.5%   1.5%   0.0%   0.0%
---   D      3.0%   2.0%   1.0%   0.0%   0.0%
--- 인센티브율은 개인등급 기준 (S 20%, A 12%, B 6%, C/D 0%)
-INSERT INTO comp_rule (cycle_id, grade_id, org_grade_id, pay_grade_code,
-                       perf_raise_rate, incentive_rate)
-SELECT 1, g.id, og.id, 'P' || g.sort_order, m.rate, i.rate
-  FROM (VALUES
-          ('S','S',0.070),('S','A',0.055),('S','B',0.040),('S','C',0.015),('S','D',0),
-          ('A','S',0.060),('A','A',0.045),('A','B',0.030),('A','C',0.010),('A','D',0),
-          ('B','S',0.050),('B','A',0.035),('B','B',0.020),('B','C',0.005),('B','D',0),
-          ('C','S',0.040),('C','A',0.025),('C','B',0.015),('C','C',0),    ('C','D',0),
-          ('D','S',0.030),('D','A',0.020),('D','B',0.010),('D','C',0),    ('D','D',0))
-       AS m(org_code, grade_code, rate)
-  JOIN (VALUES ('S',0.20),('A',0.12),('B',0.06),('C',0),('D',0)) AS i(grade_code, rate)
-    ON i.grade_code = m.grade_code
-  JOIN evaluation_grade g ON g.cycle_id = 1 AND g.code = m.grade_code
-  JOIN org_grade og       ON og.cycle_id = 1 AND og.code = m.org_code;
-
--- 상위평가 미확정 부서용 공통 규칙 (상위평가 B 와 동일 수준)
-INSERT INTO comp_rule (cycle_id, grade_id, org_grade_id, pay_grade_code,
-                       perf_raise_rate, incentive_rate)
-SELECT 1, g.id, NULL, 'P' || g.sort_order, v.rate, v.inc
-  FROM (VALUES ('S',0.040,0.20),('A',0.030,0.12),('B',0.020,0.06),('C',0.005,0),('D',0,0))
-       AS v(code, rate, inc)
+INSERT INTO comp_rule (cycle_id, grade_id, pay_grade_code, perf_raise_rate, incentive_rate)
+SELECT 1, g.id, 'P' || g.sort_order, v.perf, v.inc
+  FROM (VALUES ('A',  0.050, 0.15),
+               ('B',  0.030, 0.08),
+               ('C',  0.015, 0),
+               ('D',  0,     0),
+               ('E', -0.010, 0))
+       AS v(code, perf, inc)
   JOIN evaluation_grade g ON g.cycle_id = 1 AND g.code = v.code;
 
 INSERT INTO salary_band (cycle_id, job_level_id, min_salary, max_salary) VALUES
