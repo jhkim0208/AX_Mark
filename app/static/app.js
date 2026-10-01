@@ -15,6 +15,10 @@ async function api(path, options = {}) {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
+  if (res.status === 401) {
+    location.href = "/auth/login";             // 세션 만료 → SSO 재로그인
+    throw new Error("로그인이 필요합니다.");
+  }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.detail || `요청 실패 (${res.status})`);
   return body;
@@ -110,6 +114,7 @@ function renderSummary() {
 }
 
 function renderHeader() {
+  $("readonly-banner").hidden = !state.sheet.read_only;
   $("evaluator").textContent = state.sheet.department.head_name || "미지정";
 }
 
@@ -163,7 +168,11 @@ async function onSubmit() {
 
 async function init() {
   state.ctx = await api("/api/context");
-  const { cycle, policy, departments } = state.ctx;
+  const { cycle, policy, departments, user } = state.ctx;
+  const roles = [user.head_of.length ? "부서장" : null, user.is_hr ? "인사팀" : null].filter(Boolean);
+  $("user-label").innerHTML =
+    `<strong>${esc(user.name)}</strong> ${roles.map((r) => `<span class="role-tag">${r}</span>`).join(" ")}`;
+  $("dev-banner").hidden = user.auth_mode !== "dev";
   const statusLabel = { DRAFT: "준비중", OPEN: "입력중", CALIBRATION: "조정중", CONFIRMED: "확정", CLOSED: "마감" };
   $("cycle-label").textContent =
     `${cycle.name} · ${statusLabel[cycle.status] || cycle.status} · ${cycle.eval_year + 1}년 처우 반영`;
@@ -172,12 +181,17 @@ async function init() {
     state.ctx.grades.filter((g) => g.incentive_eligible).map((g) => g.code).join("·") || "없음";
 
   const select = $("dept-select");
-  const depth = (d) => (d.parent_id ? 1 + depth(departments.find((x) => x.id === d.parent_id)) : 0);
+  // 권한 있는 부서만 내려오므로 상위 부서가 목록에 없을 수 있다
+  const depth = (d) => {
+    const parent = departments.find((x) => x.id === d.parent_id);
+    return parent ? 1 + depth(parent) : 0;
+  };
   select.innerHTML = departments
     .map((d) => `<option value="${d.id}">${"  ".repeat(depth(d))}${esc(d.name)}</option>`)
     .join("");
   const saved = Number(new URLSearchParams(location.search).get("dept"));
-  state.deptId = departments.some((d) => d.id === saved) ? saved : departments[0]?.id;
+  const ownDept = departments.find((d) => d.editable);   // 기본: 본인이 부서장인 부서
+  state.deptId = departments.some((d) => d.id === saved) ? saved : (ownDept || departments[0])?.id;
   select.value = state.deptId;
   select.addEventListener("change", () => {
     state.deptId = Number(select.value);

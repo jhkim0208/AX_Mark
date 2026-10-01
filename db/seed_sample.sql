@@ -31,6 +31,12 @@ INSERT INTO employee (id, emp_no, name, department_id, job_level_id, hire_date) 
     (13, 'E013', '신사원',   5, 1, '2024-07-01');
 ALTER SEQUENCE employee_id_seq RESTART WITH 14;
 
+-- SSO 계정(이메일) 매핑 – 실제 운영 시 인사 마스터의 사내 이메일로 적재
+UPDATE employee SET email = lower(emp_no) || '@example.com';
+
+-- 인사팀장에게 전 부서 조회 권한
+INSERT INTO app_user_role (employee_id, role) VALUES (6, 'HR_ADMIN');
+
 UPDATE department d SET head_employee_id = h.emp
   FROM (VALUES (1, 1), (2, 2), (3, 6), (4, 9), (5, 10)) AS h(dept, emp)
  WHERE d.id = h.dept;

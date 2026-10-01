@@ -33,9 +33,18 @@ CREATE TABLE employee (                        -- 직원
     name           VARCHAR(50)  NOT NULL,
     department_id  INT NOT NULL REFERENCES department(id),
     job_level_id   INT NOT NULL REFERENCES job_level(id),
+    email          VARCHAR(200) UNIQUE,                 -- 사내 SSO 계정 매핑 키
     hire_date      DATE NOT NULL,
     status         VARCHAR(10)  NOT NULL DEFAULT 'ACTIVE'
                    CHECK (status IN ('ACTIVE', 'LEAVE', 'RESIGNED'))
+);
+
+-- 시스템 역할. 부서장 권한은 department.head_employee_id 로 자동 부여되므로 별도 등록 불필요
+--   HR_ADMIN : 전 부서 조회 (인사팀)
+CREATE TABLE app_user_role (
+    employee_id  INT NOT NULL REFERENCES employee(id),
+    role         VARCHAR(20) NOT NULL CHECK (role IN ('HR_ADMIN')),
+    PRIMARY KEY (employee_id, role)
 );
 
 ALTER TABLE department
@@ -189,25 +198,45 @@ CREATE TABLE evaluation_history (              -- 등급 변경 감사 로그
     new_grade_id   INT REFERENCES evaluation_grade(id),
     old_status     VARCHAR(10),
     new_status     VARCHAR(10),
-    changed_by     TEXT NOT NULL DEFAULT current_user,
+    changed_by     TEXT NOT NULL,                     -- 로그인 사용자 사번 (app.user)
     changed_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- 변경자: 애플리케이션이 트랜잭션마다 set_config('app.user', 사번, true) 로 지정.
+--         지정되지 않은 경우(DB 직접 수정) DB 계정명을 기록한다.
+CREATE FUNCTION fn_current_actor() RETURNS TEXT AS $$
+    SELECT COALESCE(NULLIF(current_setting('app.user', true), ''), current_user::text);
+$$ LANGUAGE sql STABLE;
+
 CREATE FUNCTION trg_evaluation_history() RETURNS trigger AS $$
 BEGIN
-    IF NEW.grade_id IS DISTINCT FROM OLD.grade_id
-       OR NEW.status IS DISTINCT FROM OLD.status THEN
+    IF TG_OP = 'INSERT' THEN
         INSERT INTO evaluation_history
-            (evaluation_id, old_grade_id, new_grade_id, old_status, new_status)
-        VALUES (NEW.id, OLD.grade_id, NEW.grade_id, OLD.status, NEW.status);
+            (evaluation_id, old_grade_id, new_grade_id, old_status, new_status, changed_by)
+        VALUES (NEW.id, NULL, NEW.grade_id, NULL, NEW.status, fn_current_actor());
+    ELSIF NEW.grade_id IS DISTINCT FROM OLD.grade_id
+          OR NEW.status IS DISTINCT FROM OLD.status THEN
+        INSERT INTO evaluation_history
+            (evaluation_id, old_grade_id, new_grade_id, old_status, new_status, changed_by)
+        VALUES (NEW.id, OLD.grade_id, NEW.grade_id, OLD.status, NEW.status, fn_current_actor());
     END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE FUNCTION trg_evaluation_touch() RETURNS trigger AS $$
+BEGIN
     NEW.updated_at := now();
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER evaluation_history_trg
+CREATE TRIGGER evaluation_touch_trg
     BEFORE UPDATE ON evaluation
+    FOR EACH ROW EXECUTE FUNCTION trg_evaluation_touch();
+
+CREATE TRIGGER evaluation_history_trg
+    AFTER INSERT OR UPDATE ON evaluation
     FOR EACH ROW EXECUTE FUNCTION trg_evaluation_history();
 
 -- ---------------------------------------------------------------------

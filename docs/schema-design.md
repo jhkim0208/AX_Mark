@@ -35,12 +35,13 @@ erDiagram
 
 | 영역 | 테이블 | 설명 |
 |------|--------|------|
-| 인사 | `department`, `job_level`, `employee` | 조직(본부-팀 계층)·직급·직원 마스터 |
+| 인사 | `department`, `job_level`, `employee` | 조직(본부-팀 계층)·직급·직원 마스터. `employee.email` 은 SSO 계정 매핑 키 |
+| 권한 | `app_user_role` | 시스템 역할 (`HR_ADMIN` = 인사팀 전 부서 조회). 부서장 권한은 `department.head_employee_id` 로 자동 부여 |
 | 평가 | `evaluation_cycle` | 연 1회 평가주기. 상태: DRAFT → OPEN → CALIBRATION → CONFIRMED → CLOSED |
 | | `evaluation_grade` | A~E 등급. `raise_sign`(POSITIVE/ZERO/NEGATIVE), `incentive_eligible` |
 | | `grade_distribution_guide` | (선택) 등급별 배분 비율 가이드 |
 | | `evaluation` | 부서장이 입력하는 평가. 직원당 주기별 1건 |
-| | `evaluation_history` | 등급·상태 변경 시 트리거로 자동 기록 |
+| | `evaluation_history` | 등급·상태 입력/변경 시 트리거로 자동 기록. 변경자는 로그인 사용자 사번 |
 | 정책 | `comp_policy` | 기본인상률, 절사 단위/방식, 인센티브 기준(당해/차년 연봉), 전사 지급률 |
 | | `comp_rule` | 등급별 연봉등급·성과인상률·인센티브율·정액 인센티브 (등급당 1건) |
 | | `salary_band` | (선택) 직급별 연봉 상·하한 |
@@ -110,7 +111,7 @@ erDiagram
 4. **연봉 밴드** – 직급별 상·하한을 운영하는지, 상한 초과분 처리(버림/일시금)
 5. **평가 대상 기준** – 중도 입사자·휴직자·승진자 처리
 6. **다단계 평가** – 1차(팀장)·2차(본부장) 평가 여부
-7. **권한/보안** – 로그인 방식, 부서장/인사팀 역할 구분 (다음 단계 구현 예정)
+7. **권한/보안** – 사내 SSO(OIDC) 로그인 구현 완료. 인사팀의 조정 권한(현재 조회 전용) 범위 결정 필요
 
 ## 8. 실행 방법
 

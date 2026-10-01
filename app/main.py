@@ -1,11 +1,14 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.sessions import SessionMiddleware
 
+from . import auth
+from .auth import User, current_user
 from .db import close_pool, get_pool
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -19,6 +22,15 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="업적평가 보상 시뮬레이션", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=auth.settings.session_secret,
+    session_cookie="axmark_session",
+    max_age=auth.settings.session_max_age,
+    same_site="lax",
+    https_only=auth.settings.https_only,
+)
+app.include_router(auth.router)
 
 
 # ---------------------------------------------------------------------
@@ -103,20 +115,44 @@ def _members(cur, cycle, dept_id: int, employee_id: int | None = None):
     return cur.fetchall()
 
 
-def _editable(cycle, member) -> bool:
-    return cycle["status"] == "OPEN" and member["evaluation_status"] in (None, "DRAFT")
+def _editable(cycle, member, user: User, dept_id: int) -> bool:
+    return (user.can_edit(dept_id)
+            and cycle["status"] == "OPEN"
+            and member["evaluation_status"] in (None, "DRAFT"))
+
+
+def _require_view(user: User, dept_id: int) -> None:
+    if not user.can_view(dept_id):
+        raise HTTPException(403, "이 부서를 조회할 권한이 없습니다.")
+
+
+def _require_edit(user: User, dept_id: int) -> None:
+    if not user.can_edit(dept_id):
+        raise HTTPException(403, "이 부서의 평가를 입력할 권한이 없습니다.")
+
+
+def _set_actor(cur, user: User) -> None:
+    """평가 변경 이력(evaluation_history.changed_by)에 로그인 사용자 사번을 남긴다."""
+    cur.execute("SELECT set_config('app.user', %s, true)", (user.emp_no,))
 
 
 # ---------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------
 @app.get("/")
-def index():
+def index(request: Request):
+    if request.session.get("employee_id") is None:
+        return RedirectResponse("/auth/login")
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/api/me")
+def me(user: User = Depends(current_user)):
+    return user.to_dict()
+
+
 @app.get("/api/context")
-def context(cycle_id: int | None = None):
+def context(cycle_id: int | None = None, user: User = Depends(current_user)):
     with get_pool().connection() as conn, conn.cursor() as cur:
         cycle = _cycle(cur, cycle_id)
         cur.execute(
@@ -136,23 +172,29 @@ def context(cycle_id: int | None = None):
                  LEFT JOIN employee h ON h.id = d.head_employee_id
                 ORDER BY d.code"""
         )
-        departments = cur.fetchall()
-    return {"cycle": cycle, "grades": grades, "policy": policy, "departments": departments}
+        departments = [d for d in cur.fetchall() if user.can_view(d["id"])]
+    for d in departments:
+        d["editable"] = user.can_edit(d["id"])
+    return {"cycle": cycle, "grades": grades, "policy": policy, "departments": departments,
+            "user": user.to_dict()}
 
 
 @app.get("/api/departments/{dept_id}/sheet")
-def sheet(dept_id: int, cycle_id: int | None = None):
+def sheet(dept_id: int, cycle_id: int | None = None, user: User = Depends(current_user)):
+    _require_view(user, dept_id)
     with get_pool().connection() as conn, conn.cursor() as cur:
         cycle = _cycle(cur, cycle_id)
         dept = _department(cur, dept_id)
         members = _members(cur, cycle, dept_id)
     for m in members:
-        m["editable"] = _editable(cycle, m)
+        m["editable"] = _editable(cycle, m, user, dept_id)
     return {
         "cycle": cycle,
         "department": dept,
         "members": members,
-        "can_submit": cycle["status"] == "OPEN"
+        "read_only": not user.can_edit(dept_id),
+        "can_submit": user.can_edit(dept_id)
+        and cycle["status"] == "OPEN"
         and bool(members)
         and all(m["evaluation_status"] in (None, "DRAFT") for m in members),
     }
@@ -163,15 +205,16 @@ class GradeInput(BaseModel):
 
 
 @app.put("/api/departments/{dept_id}/evaluations/{employee_id}")
-def save_grade(dept_id: int, employee_id: int, body: GradeInput, cycle_id: int | None = None):
+def save_grade(dept_id: int, employee_id: int, body: GradeInput,
+               cycle_id: int | None = None, user: User = Depends(current_user)):
     """등급 선택 즉시 저장(DRAFT)하고 재계산된 처우를 돌려준다."""
+    _require_edit(user, dept_id)
     with get_pool().connection() as conn, conn.cursor() as cur:
+        _set_actor(cur, user)
         cycle = _cycle(cur, cycle_id)
         if cycle["status"] != "OPEN":
             raise HTTPException(409, "평가 입력 기간이 아닙니다.")
-        dept = _department(cur, dept_id)
-        if dept["head_employee_id"] is None:
-            raise HTTPException(409, "부서장이 지정되지 않은 부서입니다.")
+        _department(cur, dept_id)
 
         cur.execute(f"SELECT 1 FROM ({TARGETS_SQL}) t WHERE id = %(emp)s",
                     {"dept": dept_id, "emp": employee_id})
@@ -202,16 +245,18 @@ def save_grade(dept_id: int, employee_id: int, body: GradeInput, cycle_id: int |
                VALUES (%s, %s, %s, %s)
                ON CONFLICT (cycle_id, employee_id)
                DO UPDATE SET grade_id = EXCLUDED.grade_id, evaluator_id = EXCLUDED.evaluator_id""",
-            (cycle["id"], employee_id, dept["head_employee_id"], grade_id),
+            (cycle["id"], employee_id, user.employee_id, grade_id),
         )
         member = _members(cur, cycle, dept_id, employee_id)[0]
-    member["editable"] = _editable(cycle, member)
+    member["editable"] = _editable(cycle, member, user, dept_id)
     return member
 
 
 @app.post("/api/departments/{dept_id}/submit")
-def submit(dept_id: int, cycle_id: int | None = None):
+def submit(dept_id: int, cycle_id: int | None = None, user: User = Depends(current_user)):
+    _require_edit(user, dept_id)
     with get_pool().connection() as conn, conn.cursor() as cur:
+        _set_actor(cur, user)
         cycle = _cycle(cur, cycle_id)
         if cycle["status"] != "OPEN":
             raise HTTPException(409, "평가 입력 기간이 아닙니다.")
