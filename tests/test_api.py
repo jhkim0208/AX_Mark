@@ -44,7 +44,7 @@ def login(client, login_id, password=INITIAL_PW):
 
 @pytest.fixture()
 def head(client):
-    """전략기획팀(2) 부서장 김팀장으로 로그인"""
+    """전략기획팀(2) 부서장 김도윤으로 로그인"""
     assert login(client, "E002").status_code == 200
     return client
 
@@ -76,19 +76,20 @@ def test_dummy_data_has_30_to_40_members_per_team(client):
 def test_sheet_starts_blank_with_current_salary(head):
     sheet = head.get("/api/departments/2/sheet").json()
     members = {m["name"]: m for m in sheet["members"]}
-    assert len(members) == 32 and "김팀장" not in members          # 부서장 제외
+    assert len(members) == 32 and "김도윤" not in members          # 부서장 제외
     assert all(m["grade_code"] is None for m in sheet["members"])
-    assert members["이과장"]["cur_base_salary"] == 72_000_000
+    assert members["이서준"]["cur_base_salary"] == 72_000_000
+    assert {m["job_level"] for m in sheet["members"]} <= {"CL2", "CL3", "CL4"}
 
 
 def test_division_head_evaluates_team_heads(client):
     login(client, "E001")                                            # 경영지원본부장
     names = {m["name"] for m in client.get("/api/departments/1/sheet").json()["members"]}
-    assert names == {"김팀장", "한팀장", "문팀장"}
+    assert names == {"김도윤", "한유진", "문성호"}
 
 
 def test_raise_by_individual_grade_only(head):
-    # 이과장 72,000,000 / 당해 인센티브 5,000,000, 기본인상률 2% (임시값)
+    # 이서준 72,000,000 / 당해 인센티브 5,000,000, 기본인상률 2% (임시값)
     a = put_grade(head, 2, 3, "A").json()
     assert (a["base_up_rate"], a["perf_raise_rate"], a["raise_rate"]) == (0.02, 0.05, 0.07)
     assert a["next_base_salary"] == 77_040_000
@@ -96,17 +97,17 @@ def test_raise_by_individual_grade_only(head):
     assert a["delta_total"] == (77_040_000 + 10_800_000) - (72_000_000 + 5_000_000)
 
     # 부서가 달라도 같은 등급이면 같은 성과인상률
-    login(head, "E010")                                              # 플랫폼팀장
+    login(head, "E010")                                              # Cloud Lab장
     other = put_grade(head, 5, 11, "A").json()
     assert other["perf_raise_rate"] == a["perf_raise_rate"]
 
 
 def test_d_freezes_and_e_is_negative(head):
-    d = put_grade(head, 2, 4, "D").json()                            # 박대리 56,500,000
+    d = put_grade(head, 2, 4, "D").json()                            # 박지호 56,500,000
     assert d["perf_raise_rate"] == 0 and d["raise_rate"] == 0.02
     assert d["next_base_salary"] == 57_630_000
 
-    e = put_grade(head, 2, 3, "E").json()                            # 이과장 72,000,000
+    e = put_grade(head, 2, 3, "E").json()                            # 이서준 72,000,000
     assert e["perf_raise_rate"] == -0.01 and e["raise_rate"] == 0.01
     assert e["next_base_salary"] == 72_720_000
 
@@ -139,9 +140,10 @@ def test_rule_policy_is_enforced(client, code, perf, inc, message):
 
 
 def test_band_cap_and_clear_grade(head):
-    m = put_grade(head, 2, 5, "A").json()                            # 사원 상한 5,200만
-    assert m["next_base_salary"] == 52_000_000 and m["band_capped"] is True
-    cleared = put_grade(head, 2, 5, None).json()
+    # 박지호(CL2) 56,500,000 × 1.07 = 60,455,000 → CL2 상한 6,000만
+    m = put_grade(head, 2, 4, "A").json()
+    assert m["next_base_salary"] == 60_000_000 and m["band_capped"] is True
+    cleared = put_grade(head, 2, 4, None).json()
     assert cleared["grade_code"] is None and cleared["next_base_salary"] is None
 
 
@@ -245,7 +247,7 @@ def test_forced_password_change_on_first_login(client):
 def test_reset_password_command(client):
     from app import manage
 
-    temp = manage.reset_password("E003", None)                       # 계정 없던 이과장
+    temp = manage.reset_password("E003", None)                       # 계정 없던 이서준
     assert login(client, "E003", temp).json()["redirect"] == "/change-password"
 
 
@@ -293,6 +295,7 @@ def test_hr_overview_stats(client):
     depts = {d["name"]: d for d in data["departments"]}
     assert len(depts) == 8
 
+    assert {"Cloud Lab", "AI Lab", "Data Lab"} <= depts.keys()
     finance = depts["재무팀"]                                         # 시드: 전원 입력·제출
     assert (finance["headcount"], finance["rated"], finance["status"]) == (34, 34, "SUBMITTED")
     assert sum(finance["grade_counts"].values()) == 34
@@ -309,8 +312,10 @@ def test_hr_overview_stats(client):
     assert finance["avg_perf_raise_rate"] == pytest.approx(float(sum(r for _, r in rows)) / 34)
 
     assert depts["전략기획팀"]["status"] == "NOT_STARTED"
-    assert depts["플랫폼팀"]["status"] == "IN_PROGRESS"
-    assert data["top_rate_guide"] == pytest.approx(0.35)             # A ≤10% + B ≤25%
+    assert depts["Cloud Lab"]["status"] == "IN_PROGRESS"
+    assert data["top_rate_limit"] == pytest.approx(0.40)             # 상위평가율 40% 초과 시 경고
+    over = {name for name, d in depts.items() if d["top_rate"] is not None and d["top_rate"] > 0.40}
+    assert over == {"AI Lab"}                                        # 시드에서 상위평가 과다 부서
     assert data["total"]["headcount"] == sum(d["headcount"] for d in depts.values())
 
 
@@ -318,7 +323,7 @@ def test_hr_overview_reflects_new_grades(client):
     login(client, "E002")
     put_grade(client, 2, 3, "A")
     put_grade(client, 2, 4, "C")
-    login(client, "E006")                                            # 인사팀장 (부서장 겸 인사팀)
+    login(client, "E006")                                            # 한유진 인사팀장 (부서장 겸 인사팀)
     d = next(d for d in client.get("/api/hr/overview").json()["departments"] if d["id"] == 2)
     assert (d["rated"], d["top_rate"], d["status"]) == (2, 0.5, "IN_PROGRESS")
     assert d["avg_perf_raise_rate"] == pytest.approx((0.05 + 0.015) / 2)
@@ -327,6 +332,6 @@ def test_hr_overview_reflects_new_grades(client):
 def test_hr_department_popup(client):
     login(client, "E007")
     res = client.get("/api/hr/departments/7").json()
-    assert res["department"]["name"] == "서비스개발팀"
+    assert res["department"]["name"] == "AI Lab"
     assert len(res["members"]) == 40 == res["stats"]["headcount"]
     assert all(m["grade_code"] and m["perf_raise_rate"] is not None for m in res["members"])

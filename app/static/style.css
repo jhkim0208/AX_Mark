@@ -201,6 +201,7 @@ td select.empty { color: var(--muted); }
   padding: 4px 10px;
   font-size: 12px;
 }
+.dist-item.top { font-weight: 600; }
 .dist-item.over { border-color: var(--warn); background: var(--warn-bg); color: var(--warn); }
 .actions { display: flex; align-items: center; gap: 12px; }
 .status-msg { color: var(--muted); font-size: 12px; }

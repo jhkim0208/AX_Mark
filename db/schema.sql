@@ -79,7 +79,8 @@ CREATE TABLE evaluation_cycle (                -- 평가주기 (연 1회)
                                           'CLOSED')),
     start_date          DATE NOT NULL,
     end_date            DATE NOT NULL,
-    comp_effective_date DATE NOT NULL                   -- 차년도 연봉 적용일 (예: N+1.01.01)
+    comp_effective_date DATE NOT NULL,                  -- 차년도 연봉 적용일 (예: N+1.01.01)
+    top_grade_ratio_limit NUMERIC(5,4)                  -- 상위평가(A·B) 비율 상한. 초과 시 경고 (NULL = 제한 없음)
 );
 
 -- 개인 평가등급 (5등급: A~E) – 주기별로 관리

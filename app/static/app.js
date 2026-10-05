@@ -72,19 +72,21 @@ function renderSummary() {
   const curDone = sum(done, "cur_base_salary");
   $("t-rate").textContent = curDone ? pct(sum(done, "next_base_salary") / curDone - 1) : "-";
 
-  // 등급 분포 vs 가이드
-  const total = ms.length || 1;
-  $("distribution").innerHTML = state.ctx.grades
-    .map((g) => {
-      const n = ms.filter((m) => m.grade_code === g.code).length;
-      const ratio = n / total;
-      const over = (g.max_ratio != null && ratio > g.max_ratio) ||
-                   (g.min_ratio != null && done.length === ms.length && ratio < g.min_ratio);
-      const guide = g.max_ratio != null ? ` · 가이드 ≤${pct(g.max_ratio)}`
-                  : g.min_ratio != null ? ` · 가이드 ≥${pct(g.min_ratio)}` : "";
-      return `<span class="dist-item ${over ? "over" : ""}">${g.code} ${n}명 (${pct(ratio)})${guide}</span>`;
-    })
-    .join("");
+  // 등급 분포 + 상위평가율(A·B ÷ 입력 인원, 인사팀 화면과 같은 기준)
+  const rated = ms.filter((m) => m.grade_code);
+  const share = (n) => (rated.length ? pct(n / rated.length) : "-");
+  const chips = state.ctx.grades.map((g) => {
+    const n = rated.filter((m) => m.grade_code === g.code).length;
+    return `<span class="dist-item">${g.code} ${n}명 (${share(n)})</span>`;
+  });
+  const limit = state.ctx.cycle.top_grade_ratio_limit;
+  const top = rated.filter((m) => m.is_top_grade).length;
+  const topRate = rated.length ? top / rated.length : null;
+  const over = limit != null && topRate != null && topRate > limit;
+  chips.unshift(
+    `<span class="dist-item top ${over ? "over" : ""}">상위평가(A·B) ${top}명 · ${pct(topRate)}` +
+    `${limit != null ? ` / 기준 ${pct(limit, 0)}` : ""}${over ? " · ⚠ 초과" : ""}</span>`);
+  $("distribution").innerHTML = chips.join("");
 
   $("submit-btn").disabled = !state.sheet.can_submit;
 }

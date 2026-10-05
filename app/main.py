@@ -316,7 +316,7 @@ def submit(dept_id: int, cycle_id: int | None = None, user: User = Depends(curre
 # API – 인사팀 현황
 # ---------------------------------------------------------------------
 def _stats(members: list[dict], grades: list[dict]) -> dict:
-    """상위평가율 = 상위등급(is_top_grade) 인원 / 평가 입력 인원
+    """상위평가율 = 상위등급(A·B, is_top_grade) 인원 / 평가 입력 인원
        평균 성과인상률 = 평가 입력 인원의 성과인상률 단순 평균"""
     rated = [m for m in members if m["grade_code"] is not None]
     priced = [m for m in rated if m["perf_raise_rate"] is not None]
@@ -366,12 +366,11 @@ def hr_overview(cycle_id: int | None = None, user: User = Depends(hr_user)):
             d.update(_stats(members, grades))
             all_members += members
 
-    top_guide = [g["max_ratio"] for g in grades if g["is_top_grade"]]
     return {
         "cycle": cycle,
         "grades": grades,
         "policy": policy,
-        "top_rate_guide": sum(top_guide) if top_guide and None not in top_guide else None,
+        "top_rate_limit": cycle["top_grade_ratio_limit"],      # 초과 시 경고
         "total": _stats(all_members, grades),
         "departments": [d for d in departments if d["headcount"] > 0],
         "user": user.to_dict(),

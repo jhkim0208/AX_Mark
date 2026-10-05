@@ -26,17 +26,17 @@ function distBar(counts, { labels = false } = {}) {
 }
 
 function topRateCell(rate) {
-  const guide = hr.data.top_rate_guide;
+  const limit = hr.data.top_rate_limit;
   if (rate == null) return '<span class="muted">-</span>';
-  const over = guide != null && rate > guide;
+  const over = limit != null && rate > limit;
   return `
-    <div class="meter" data-tip="${esc(`상위평가율 ${pct(rate)}${guide != null ? ` · 가이드 ≤${pct(guide, 0)}` : ""}`)}">
+    <div class="meter" data-tip="${esc(`상위평가율 ${pct(rate)}${limit != null ? ` · 기준 ${pct(limit, 0)} 이하` : ""}`)}">
       <div class="meter-track">
         <div class="meter-fill ${over ? "over" : ""}" style="width:${Math.min(rate, 1) * 100}%"></div>
-        ${guide != null ? `<div class="meter-guide" style="left:${guide * 100}%"></div>` : ""}
+        ${limit != null ? `<div class="meter-guide" style="left:${limit * 100}%"></div>` : ""}
       </div>
       <span class="meter-value">${pct(rate)}</span>
-      ${over ? '<span class="badge" title="배분 가이드 초과">⚠ 초과</span>' : ""}
+      ${over ? `<span class="badge" title="상위평가율 기준 ${pct(limit, 0)} 초과">⚠ 초과</span>` : ""}
     </div>`;
 }
 
@@ -49,7 +49,7 @@ function statusChip(status) {
 // 메인 화면
 // ---------------------------------------------------------------------
 function renderTiles() {
-  const { total, departments, top_rate_guide } = hr.data;
+  const { total, departments, top_rate_limit } = hr.data;
   $("t-headcount").textContent = `${total.headcount.toLocaleString()}명`;
   $("t-headcount-sub").textContent = `${departments.length}개 부서`;
   $("t-progress").textContent = pct(total.headcount ? total.rated / total.headcount : null);
@@ -57,7 +57,10 @@ function renderTiles() {
   const done = departments.filter((d) => d.status === "SUBMITTED").length;
   $("t-submitted").textContent = `${done} / ${departments.length}`;
   $("t-top").textContent = pct(total.top_rate);
-  $("t-top-sub").textContent = top_rate_guide != null ? `가이드 ≤${pct(top_rate_guide, 0)}` : "";
+  const overDepts = departments.filter((d) => top_rate_limit != null && d.top_rate > top_rate_limit);
+  $("t-top-sub").innerHTML = top_rate_limit == null ? ""
+    : `기준 ${pct(top_rate_limit, 0)} 이하` +
+      (overDepts.length ? ` · <span class="badge">⚠ 초과 ${overDepts.length}개 부서</span>` : "");
   $("t-perf").textContent = signedPct(total.avg_perf_raise_rate);
   $("t-perf-sub").textContent = total.avg_raise_rate != null
     ? `총인상률 평균 ${pct(total.avg_raise_rate)} (기본 ${pct(hr.data.policy?.base_up_rate)} 포함)` : "";
@@ -111,7 +114,8 @@ async function openDepartment(deptId) {
     $("dlg-stats").innerHTML = [
       stat("인원", `${stats.headcount}명`),
       stat("입력 / 제출", `${stats.rated} / ${stats.submitted}명`),
-      stat("상위평가율", pct(stats.top_rate)),
+      stat("상위평가율", pct(stats.top_rate) + (hr.data.top_rate_limit != null && stats.top_rate > hr.data.top_rate_limit
+        ? ' <span class="badge">⚠ 초과</span>' : "")),
       stat("평균 성과인상률", signedPct(stats.avg_perf_raise_rate)),
       stat("평균 총인상률", stats.avg_raise_rate == null ? "-" : pct(stats.avg_raise_rate)),
       stat("상태", statusChip(stats.status)),
@@ -167,6 +171,7 @@ async function init() {
   $("cycle-label").textContent = `${cycle.name} · ${cycle.eval_year + 1}년 처우 반영`;
   renderTiles();
   renderLegend();
+  $("limit-note").textContent = hr.data.top_rate_limit != null ? `기준 ${pct(hr.data.top_rate_limit, 0)}` : "기준 없음";
   renderDepartments();
 
   const rows = $("dept-rows");
