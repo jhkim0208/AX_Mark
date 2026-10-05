@@ -13,6 +13,7 @@
       <p class="sub" id="cycle-label">불러오는 중…</p>
     </div>
     <div class="topbar-right">
+      <button type="button" id="formula-btn" class="formula-btn">성과인상률 산출공식</button>
       <label class="dept-picker">
         <span>부서</span>
         <select id="dept-select"></select>
@@ -30,7 +31,12 @@
       <div class="info">
         <span class="info-label">기본인상률</span>
         <strong id="base-up">-</strong>
-        <span class="info-note">전원 공통 + 성과인상률(개인 평가등급)</span>
+        <span class="info-note">D·E 제외 + 성과인상률(직급 · 등급 · 부서 상위평가율)</span>
+      </div>
+      <div class="info">
+        <span class="info-label">우리 부서 상위평가율</span>
+        <strong id="org-top">-</strong>
+        <span class="info-note" id="org-factor"></span>
       </div>
       <div class="info">
         <span class="info-label">인센티브 지급</span>
@@ -39,6 +45,7 @@
       </div>
     </section>
 
+    <div id="alert-banner" class="banner banner-warn" role="alert" hidden></div>
     <section class="tiles">
       <div class="tile"><span>입력 현황</span><strong id="t-progress">-</strong></div>
       <div class="tile"><span>현재 연봉 합계</span><strong id="t-cur">-</strong></div>
@@ -78,6 +85,17 @@
       </div>
     </section>
   </main>
+
+  <dialog id="formula-dialog" class="dialog formula-dialog" aria-labelledby="formula-title">
+    <div class="dialog-head">
+      <div>
+        <h2 id="formula-title">성과인상률 산출공식</h2>
+        <p class="sub">평가등급에 따라 차년도 인상률이 어떻게 정해지는지 안내합니다.</p>
+      </div>
+      <button type="button" class="icon-btn" id="formula-close" aria-label="닫기">✕</button>
+    </div>
+    <div class="formula-body" id="formula-body"></div>
+  </dialog>
 
   <script src="/static/common.js"></script>
   <script src="/static/app.js"></script>

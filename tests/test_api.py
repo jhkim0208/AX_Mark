@@ -88,28 +88,77 @@ def test_division_head_evaluates_team_heads(client):
     assert names == {"김도윤", "한유진", "문성호"}
 
 
-def test_raise_by_individual_grade_only(head):
-    # 이서준 72,000,000 / 당해 인센티브 5,000,000, 기본인상률 2% (임시값)
+def sheet_member(client, dept, emp):
+    sheet = client.get(f"/api/departments/{dept}/sheet").json()
+    return next(m for m in sheet["members"] if m["employee_id"] == emp), sheet["stats"]
+
+
+# 제안 수치: 기본 2% / 직급 기준률 CL2 4%·CL3 3%·CL4 2% / 등급계수 A1.5·B1.0·C0.5·D0·E-0.25
+#            조정계수 = clamp(40% ÷ 상위평가율, 0.7, 1.5), 성과인상률 0.1%p 반올림
+def test_ab_raise_depends_on_department_top_rate(head):
+    # 이서준(CL3, 72,000,000 / 인센티브 5,000,000)만 A → 상위평가율 100% → 조정계수 0.7
     a = put_grade(head, 2, 3, "A").json()
-    assert (a["base_up_rate"], a["perf_raise_rate"], a["raise_rate"]) == (0.02, 0.05, 0.07)
-    assert a["next_base_salary"] == 77_040_000
+    assert a["org_factor"] == 0.7
+    assert a["perf_raise_rate"] == pytest.approx(0.032)              # 3% × 1.5 × 0.7 = 3.15% → 3.2%
+    assert a["raise_rate"] == pytest.approx(0.052)
+    assert a["next_base_salary"] == 75_740_000                       # 72,000,000 × 1.052, 만원 절사
     assert a["next_incentive"] == 10_800_000                         # 72,000,000 × 15%
-    assert a["delta_total"] == (77_040_000 + 10_800_000) - (72_000_000 + 5_000_000)
 
-    # 부서가 달라도 같은 등급이면 같은 성과인상률
-    login(head, "E010")                                              # Cloud Lab장
-    other = put_grade(head, 5, 11, "A").json()
-    assert other["perf_raise_rate"] == a["perf_raise_rate"]
+    # 두 명을 C로 입력 → 상위평가율 1/3 → 조정계수 1.2 → 이서준의 성과인상률이 올라간다
+    put_grade(head, 2, 4, "C")
+    put_grade(head, 2, 5, "C")
+    a, stats = sheet_member(head, 2, 3)
+    assert stats["top_rate"] == pytest.approx(1 / 3) and stats["org_factor"] == pytest.approx(1.2)
+    assert a["perf_raise_rate"] == pytest.approx(0.054)              # 3% × 1.5 × 1.2
+    assert a["next_base_salary"] == 77_320_000
+    c, _ = sheet_member(head, 2, 4)                                  # 박지호 CL2 C: 조정계수 미적용
+    assert c["perf_raise_rate"] == pytest.approx(0.020) and c["raise_rate"] == pytest.approx(0.040)
 
 
-def test_d_freezes_and_e_is_negative(head):
+def test_same_department_level_and_grade_share_rate(head):
+    put_grade(head, 2, 3, "C")
+    put_grade(head, 2, 4, "B")                                       # 박지호 CL2
+    put_grade(head, 2, 5, "B")                                       # 최하린 CL2
+    b1, stats = sheet_member(head, 2, 4)
+    b2, _ = sheet_member(head, 2, 5)
+    assert stats["org_factor"] == pytest.approx(0.7)                 # 40% ÷ 66.7% = 0.6 → 하한 0.7
+    assert b1["perf_raise_rate"] == b2["perf_raise_rate"] == pytest.approx(0.028)
+
+
+def test_same_level_differs_by_department(client):
+    login(client, "E007")                                            # 인사팀 – 부서원 상세 조회
+    def cl4_a_rates(dept):
+        members = client.get(f"/api/hr/departments/{dept}").json()["members"]
+        return {m["perf_raise_rate"] for m in members if m["job_level"] == "CL4" and m["grade_code"] == "A"}
+    ai, finance = cl4_a_rates(7), cl4_a_rates(6)                     # AI Lab(상위평가 과다) vs 재무팀
+    assert len(ai) == 1 and len(finance) == 1                        # 부서 안에서는 동일
+    assert ai.pop() < finance.pop()                                  # 상위평가율 높은 AI Lab 이 더 낮음
+
+
+def test_level_rates_decrease_and_grades_ordered(client):
+    rows = db_rows(
+        """SELECT jl.code, g.code, f, fn_perf_rate(1, jl.id, g.id, f)
+             FROM job_level jl, evaluation_grade g, unnest(ARRAY[0.7, 1.0, 1.5]::numeric[]) f
+            ORDER BY jl.sort_order, f, g.sort_order"""
+    )
+    rate = {(lv, g, float(f)): r for lv, g, f, r in rows}
+    for f in (0.7, 1.0, 1.5):
+        for g in "ABC":
+            assert rate[("CL2", g, f)] > rate[("CL3", g, f)] > rate[("CL4", g, f)]   # CL2 > CL3 > CL4
+        for lv in ("CL2", "CL3", "CL4"):
+            assert rate[(lv, "A", f)] > rate[(lv, "B", f)] > rate[(lv, "C", f)] > 0   # A > B > C
+            assert rate[(lv, "D", f)] == 0 and rate[(lv, "E", f)] < 0
+
+
+def test_d_freezes_completely_and_e_is_negative(head):
     d = put_grade(head, 2, 4, "D").json()                            # 박지호 56,500,000
-    assert d["perf_raise_rate"] == 0 and d["raise_rate"] == 0.02
-    assert d["next_base_salary"] == 57_630_000
+    assert d["base_up_rate"] == 0 and d["perf_raise_rate"] == 0 and d["raise_rate"] == 0
+    assert d["next_base_salary"] == 56_500_000 and d["next_incentive"] == 0
 
-    e = put_grade(head, 2, 3, "E").json()                            # 이서준 72,000,000
-    assert e["perf_raise_rate"] == -0.01 and e["raise_rate"] == 0.01
-    assert e["next_base_salary"] == 72_720_000
+    e = put_grade(head, 2, 3, "E").json()                            # 이서준 CL3 72,000,000
+    assert e["base_up_rate"] == 0
+    assert e["perf_raise_rate"] == pytest.approx(-0.008)             # 3% × -0.25 = -0.75% → -0.8%
+    assert e["next_base_salary"] == 71_420_000
 
 
 def test_incentive_only_for_a_and_b(head):
@@ -121,30 +170,56 @@ def test_incentive_only_for_a_and_b(head):
 
 
 @pytest.mark.parametrize(
-    "code, perf, inc, message",
+    "code, column, value, message",
     [
-        ("A", 0, 0.15, "양수"),
-        ("D", 0.01, 0, r"0\(동결\)"),
-        ("E", 0.01, 0, "음수"),
-        ("C", 0.01, 0.05, "인센티브 지급 대상이 아닙니다"),
+        ("A", "perf_factor", 0, "양수"),
+        ("D", "perf_factor", 0.1, r"0\(동결\)"),
+        ("E", "perf_factor", 0.1, "음수"),
+        ("D", "base_up_applies", True, "기본인상률도 적용할 수 없습니다"),
+        ("C", "incentive_rate", 0.05, "인센티브 지급 대상이 아닙니다"),
     ],
 )
-def test_rule_policy_is_enforced(client, code, perf, inc, message):
+def test_rule_policy_is_enforced(client, code, column, value, message):
     with psycopg.connect(TEST_DB) as conn:
         with pytest.raises(psycopg.errors.RaiseException, match=message):
             conn.execute(
-                """UPDATE comp_rule SET perf_raise_rate = %s, incentive_rate = %s
-                    WHERE grade_id = (SELECT id FROM evaluation_grade WHERE code = %s)""",
-                (perf, inc, code),
+                f"""UPDATE comp_rule SET {column} = %s
+                     WHERE grade_id = (SELECT id FROM evaluation_grade WHERE code = %s)""",
+                (value, code),
             )
 
 
 def test_band_cap_and_clear_grade(head):
-    # 박지호(CL2) 56,500,000 × 1.07 = 60,455,000 → CL2 상한 6,000만
+    with psycopg.connect(TEST_DB, autocommit=True) as conn:
+        conn.execute("UPDATE salary_band SET max_salary = 58000000 WHERE job_level_id = 1")
+    # 박지호(CL2) 56,500,000 A → 2% + 4%×1.5×0.7 = 6.2% → 60,003,000 → CL2 상한 5,800만
     m = put_grade(head, 2, 4, "A").json()
-    assert m["next_base_salary"] == 60_000_000 and m["band_capped"] is True
+    assert m["next_base_salary"] == 58_000_000 and m["band_capped"] is True
     cleared = put_grade(head, 2, 4, None).json()
     assert cleared["grade_code"] is None and cleared["next_base_salary"] is None
+
+
+def grade_members(head, codes):
+    """전략기획팀 부서원 앞에서부터 등급을 차례로 입력"""
+    members = head.get("/api/departments/2/sheet").json()["members"]
+    for m, code in zip(members, codes):
+        assert put_grade(head, 2, m["employee_id"], code).status_code == 200
+    return head.get("/api/departments/2/sheet").json()["stats"]
+
+
+@pytest.mark.parametrize(
+    "codes, expected",
+    [
+        ("A", {"GRADE_A", "TOP"}),            # A 100%
+        ("BBC", {"TOP"}),                     # A 0%, A·B 66.7%
+        ("BBCCC", set()),                     # A·B 정확히 40% → 경고 없음 (B 40% 는 안내만)
+        ("ABCCCCCCCC", set()),                # A 정확히 10%, A·B 20%
+        ("AABCCCCCCC", {"GRADE_A"}),          # A 20% > 10%, A·B 30%
+    ],
+)
+def test_distribution_alerts(head, codes, expected):
+    stats = grade_members(head, codes)
+    assert {a["type"] for a in stats["alerts"]} == expected
 
 
 def test_rejects_non_target_and_invalid_grade(head):
@@ -300,22 +375,24 @@ def test_hr_overview_stats(client):
     assert (finance["headcount"], finance["rated"], finance["status"]) == (34, 34, "SUBMITTED")
     assert sum(finance["grade_counts"].values()) == 34
 
-    rows = db_rows(
-        """SELECT g.code, r.perf_raise_rate FROM evaluation ev
-             JOIN employee e ON e.id = ev.employee_id
-             JOIN evaluation_grade g ON g.id = ev.grade_id
-             JOIN comp_rule r ON r.grade_id = g.id
-            WHERE e.department_id = 6"""
-    )
-    top = sum(1 for code, _ in rows if code in ("A", "B"))
+    members = client.get("/api/hr/departments/6").json()["members"]
+    top = sum(1 for m in members if m["grade_code"] in ("A", "B"))
     assert finance["top_rate"] == pytest.approx(top / 34)
-    assert finance["avg_perf_raise_rate"] == pytest.approx(float(sum(r for _, r in rows)) / 34)
+    assert finance["avg_perf_raise_rate"] == pytest.approx(sum(m["perf_raise_rate"] for m in members) / 34)
+    assert finance["org_factor"] == pytest.approx(min(1.5, max(0.7, 0.40 / (top / 34))), abs=1e-4)
 
     assert depts["전략기획팀"]["status"] == "NOT_STARTED"
     assert depts["Cloud Lab"]["status"] == "IN_PROGRESS"
     assert data["top_rate_limit"] == pytest.approx(0.40)             # 상위평가율 40% 초과 시 경고
-    over = {name for name, d in depts.items() if d["top_rate"] is not None and d["top_rate"] > 0.40}
-    assert over == {"AI Lab"}                                        # 시드에서 상위평가 과다 부서
+    for d in depts.values():                                         # 경고: A > 10% 또는 A·B > 40%
+        expected = set()
+        if d["rated"]:
+            if d["grade_counts"]["A"] / d["rated"] > 0.10:
+                expected.add("GRADE_A")
+            if d["top_rate"] > 0.40:
+                expected.add("TOP")
+        assert {a["type"] for a in d["alerts"]} == expected, d["name"]
+    assert "TOP" in {a["type"] for a in depts["AI Lab"]["alerts"]}   # 시드에서 상위평가 과다 부서
     assert data["total"]["headcount"] == sum(d["headcount"] for d in depts.values())
 
 
@@ -326,7 +403,9 @@ def test_hr_overview_reflects_new_grades(client):
     login(client, "E006")                                            # 한유진 인사팀장 (부서장 겸 인사팀)
     d = next(d for d in client.get("/api/hr/overview").json()["departments"] if d["id"] == 2)
     assert (d["rated"], d["top_rate"], d["status"]) == (2, 0.5, "IN_PROGRESS")
-    assert d["avg_perf_raise_rate"] == pytest.approx((0.05 + 0.015) / 2)
+    assert d["org_factor"] == pytest.approx(0.8)                     # 40% ÷ 50%
+    # 이서준 CL3 A: 3% × 1.5 × 0.8 = 3.6%, 박지호 CL2 C: 4% × 0.5 = 2.0%
+    assert d["avg_perf_raise_rate"] == pytest.approx((0.036 + 0.020) / 2)
 
 
 def test_hr_department_popup(client):
@@ -335,3 +414,29 @@ def test_hr_department_popup(client):
     assert res["department"]["name"] == "AI Lab"
     assert len(res["members"]) == 40 == res["stats"]["headcount"]
     assert all(m["grade_code"] and m["perf_raise_rate"] is not None for m in res["members"])
+
+
+# ---------------------------------------------------------------------
+# 성과인상률 산출공식 팝업
+# ---------------------------------------------------------------------
+def test_formula_for_department_head(head):
+    put_grade(head, 2, 3, "A")
+    put_grade(head, 2, 4, "C")                                       # 상위평가율 50% → 조정계수 0.8
+    f = head.get("/api/formula?dept_id=2").json()
+    assert [l["code"] for l in f["levels"]] == ["CL2", "CL3", "CL4"]
+    assert f["policy"]["top_rate_ref"] == 0.4
+    assert f["current"]["top_rate"] == 0.5 and f["factor"] == pytest.approx(0.8)
+    cl3 = next(r for r in f["matrix"] if r["level"] == "CL3")["rates"]
+    assert cl3["A"]["perf"] == pytest.approx(0.036) and cl3["A"]["total"] == pytest.approx(0.056)
+    assert cl3["D"]["total"] == 0
+    # 화면의 실제 계산과 같은 값
+    a, _ = sheet_member(head, 2, 3)
+    assert a["perf_raise_rate"] == pytest.approx(cl3["A"]["perf"])
+    assert {e["top_rate"]: e["factor"] for e in f["examples"]}[0.4] == 1.0
+    assert head.get("/api/formula?dept_id=7").status_code == 403    # 다른 부서
+
+
+def test_formula_for_hr_without_department(client):
+    login(client, "E007")
+    f = client.get("/api/formula").json()
+    assert f["current"] is None and f["factor"] == 1

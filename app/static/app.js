@@ -1,4 +1,4 @@
-const state = { ctx: null, sheet: null, deptId: null, seq: {} };
+const state = { ctx: null, sheet: null, deptId: null, reqId: 0 };
 
 function setStatus(msg, isError = false) {
   const el = $("status-msg");
@@ -72,21 +72,29 @@ function renderSummary() {
   const curDone = sum(done, "cur_base_salary");
   $("t-rate").textContent = curDone ? pct(sum(done, "next_base_salary") / curDone - 1) : "-";
 
-  // 등급 분포 + 상위평가율(A·B ÷ 입력 인원, 인사팀 화면과 같은 기준)
-  const rated = ms.filter((m) => m.grade_code);
-  const share = (n) => (rated.length ? pct(n / rated.length) : "-");
-  const chips = state.ctx.grades.map((g) => {
-    const n = rated.filter((m) => m.grade_code === g.code).length;
-    return `<span class="dist-item">${g.code} ${n}명 (${share(n)})</span>`;
-  });
+  // 등급 분포 · 가이드 · 경고 (A 10% 초과, A·B 40% 초과 시 경고 / B 30% 는 안내만)
+  const st = state.sheet.stats;
+  const alertTypes = new Set(st.alerts.map((a) => a.type));
   const limit = state.ctx.cycle.top_grade_ratio_limit;
-  const top = rated.filter((m) => m.is_top_grade).length;
-  const topRate = rated.length ? top / rated.length : null;
-  const over = limit != null && topRate != null && topRate > limit;
-  chips.unshift(
-    `<span class="dist-item top ${over ? "over" : ""}">상위평가(A·B) ${top}명 · ${pct(topRate)}` +
-    `${limit != null ? ` / 기준 ${pct(limit, 0)}` : ""}${over ? " · ⚠ 초과" : ""}</span>`);
+  const chip = (label, guide, over) =>
+    `<span class="dist-item ${over ? "over" : ""}">${label}${guide}${over ? " · ⚠ 초과" : ""}</span>`;
+  const chips = state.ctx.grades.map((g) => {
+    const n = st.grade_counts[g.code];
+    const guide = g.max_ratio != null ? ` · 가이드 ≤${pct(g.max_ratio, 0)}` : "";
+    return chip(`${g.code} ${n}명 (${pct(st.grade_ratios[g.code])})`, guide, alertTypes.has(`GRADE_${g.code}`));
+  });
+  const topN = state.ctx.grades.filter((g) => g.is_top_grade).reduce((a, g) => a + st.grade_counts[g.code], 0);
+  chips.splice(2, 0, `<span class="dist-sep"></span>` +
+    chip(`<b>A·B 합계 ${topN}명 (${pct(st.top_rate)})</b>`, limit != null ? ` · 기준 ≤${pct(limit, 0)}` : "",
+         alertTypes.has("TOP")) + `<span class="dist-sep"></span>`);
   $("distribution").innerHTML = chips.join("");
+
+  // 부서 상위평가율 → A·B 조정계수
+  $("org-top").textContent = pct(st.top_rate);
+  $("org-factor").textContent = `A·B 성과인상률 조정계수 ×${Number(st.org_factor).toFixed(2)}`;
+  $("alert-banner").hidden = !st.alerts.length;
+  $("alert-banner").textContent = st.alerts.length
+    ? `⚠ 등급 배분 기준 초과: ${st.alerts.map((a) => a.message).join(" / ")}` : "";
 
   $("submit-btn").disabled = !state.sheet.can_submit;
 }
@@ -106,25 +114,38 @@ async function loadSheet() {
   renderSummary();
 }
 
+// 등급 하나를 바꾸면 부서 상위평가율이 바뀌어 같은 부서 A·B 인원의 성과인상률도 함께 바뀐다.
+// → 저장 후 부서 전체를 다시 받아 값이 바뀐 행만 갱신·강조한다.
+const rowKey = (m) => [m.grade_code, m.evaluation_status, m.perf_raise_rate, m.next_base_salary, m.next_incentive].join("|");
+
+async function refreshSheet() {
+  const reqId = ++state.reqId;
+  const sheet = await api(`/api/departments/${state.deptId}/sheet`);
+  if (reqId !== state.reqId) return;                 // 더 최신 요청이 있으면 무시
+  const before = new Map(state.sheet.members.map((m) => [m.employee_id, rowKey(m)]));
+  state.sheet = sheet;
+  for (const m of sheet.members) {
+    if (before.get(m.employee_id) === rowKey(m)) continue;
+    const tr = document.querySelector(`tr[data-emp="${m.employee_id}"]`);
+    if (!tr) continue;
+    tr.innerHTML = rowHtml(m);
+    tr.classList.add("dirty");
+    setTimeout(() => tr.classList.remove("dirty"), 900);
+  }
+  renderSummary();
+}
+
 async function onGradeChange(e) {
   const sel = e.target;
   if (sel.tagName !== "SELECT" || !sel.dataset.emp) return;
   const empId = Number(sel.dataset.emp);
-  const seq = (state.seq[empId] = (state.seq[empId] || 0) + 1);
   setStatus("계산 중…");
   try {
-    const updated = await api(`/api/departments/${state.deptId}/evaluations/${empId}`, {
+    await api(`/api/departments/${state.deptId}/evaluations/${empId}`, {
       method: "PUT",
       body: JSON.stringify({ grade_code: sel.value || null }),
     });
-    if (seq !== state.seq[empId]) return; // 더 최신 요청이 있으면 무시
-    const idx = state.sheet.members.findIndex((m) => m.employee_id === empId);
-    state.sheet.members[idx] = updated;
-    const tr = document.querySelector(`tr[data-emp="${empId}"]`);
-    tr.innerHTML = rowHtml(updated);
-    tr.classList.add("dirty");
-    setTimeout(() => tr.classList.remove("dirty"), 600);
-    renderSummary();
+    await refreshSheet();
     setStatus("자동 저장됨 (임시저장)");
   } catch (err) {
     setStatus(err.message, true);
@@ -173,6 +194,7 @@ async function init() {
   });
 
   $("rows").addEventListener("change", onGradeChange);
+  bindFormulaDialog(() => state.deptId);
   $("submit-btn").addEventListener("click", onSubmit);
   if (state.deptId) await loadSheet();
 }

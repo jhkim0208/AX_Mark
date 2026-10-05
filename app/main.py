@@ -62,20 +62,8 @@ def _department(cur, department_id: int):
     return dept
 
 
-# 평가 대상: 부서원(부서장 제외) + 직속 하위 부서의 부서장
-TARGETS_SQL = """
-    SELECT e.id
-      FROM employee e
-      JOIN department d ON d.id = e.department_id
-     WHERE e.department_id = %(dept)s
-       AND e.id IS DISTINCT FROM d.head_employee_id
-       AND e.status = 'ACTIVE'
-    UNION
-    SELECT c.head_employee_id
-      FROM department c
-     WHERE c.parent_id = %(dept)s
-       AND c.head_employee_id IS NOT NULL
-"""
+# 평가 대상: 부서원(부서장 제외) + 직속 하위 부서의 부서장 (DB 함수 fn_unit_targets)
+TARGETS_SQL = "SELECT fn_unit_targets(%(dept)s) AS id"
 
 MEMBERS_SQL = f"""
     WITH targets AS ({TARGETS_SQL})
@@ -89,7 +77,8 @@ MEMBERS_SQL = f"""
            g.code            AS grade_code,
            g.is_top_grade,
            ev.status         AS evaluation_status,
-           s.pay_grade_code, s.base_up_rate, s.perf_raise_rate, s.raise_rate,
+           s.pay_grade_code, s.org_top_rate, s.org_factor,
+           s.base_up_rate, s.perf_raise_rate, s.raise_rate,
            s.next_base_salary, s.next_incentive, s.next_total,
            s.delta_base_salary, s.delta_incentive, s.delta_total, s.band_capped
       FROM targets t
@@ -135,7 +124,7 @@ def _set_actor(cur, user: User) -> None:
 def _grades(cur, cycle_id: int):
     cur.execute(
         """SELECT g.code, g.name, g.raise_sign, g.incentive_eligible, g.is_top_grade,
-                  gd.min_ratio, gd.max_ratio
+                  gd.min_ratio, gd.max_ratio, COALESCE(gd.alert_on_exceed, false) AS alert_on_exceed
              FROM evaluation_grade g
              LEFT JOIN grade_distribution_guide gd ON gd.grade_id = g.id
             WHERE g.cycle_id = %s ORDER BY g.sort_order""",
@@ -225,12 +214,15 @@ def sheet(dept_id: int, cycle_id: int | None = None, user: User = Depends(curren
         cycle = _cycle(cur, cycle_id)
         dept = _department(cur, dept_id)
         members = _members(cur, cycle, dept_id)
+        stats = _stats(members, _grades(cur, cycle["id"]), cycle)
+        stats["org_factor"] = _org_factor(cur, cycle["id"], dept_id)
     for m in members:
         m["editable"] = _editable(cycle, m, user, dept_id)
     return {
         "cycle": cycle,
         "department": dept,
         "members": members,
+        "stats": stats,             # 상위평가율 · 경고 · A·B 조정계수
         "can_submit": cycle["status"] == "OPEN"
         and bool(members)
         and all(m["evaluation_status"] in (None, "DRAFT") for m in members),
@@ -315,9 +307,11 @@ def submit(dept_id: int, cycle_id: int | None = None, user: User = Depends(curre
 # ---------------------------------------------------------------------
 # API – 인사팀 현황
 # ---------------------------------------------------------------------
-def _stats(members: list[dict], grades: list[dict]) -> dict:
-    """상위평가율 = 상위등급(A·B, is_top_grade) 인원 / 평가 입력 인원
-       평균 성과인상률 = 평가 입력 인원의 성과인상률 단순 평균"""
+def _stats(members: list[dict], grades: list[dict], cycle: dict) -> dict:
+    """부서(평가 단위) 현황
+       상위평가율      = A·B(is_top_grade) 인원 ÷ 평가 입력 인원
+       평균 성과인상률 = 평가 입력 인원의 성과인상률 단순 평균
+       경고            = 경고 대상 등급 가이드 초과(A > 10%) 또는 상위평가율 > 상한(40%)"""
     rated = [m for m in members if m["grade_code"] is not None]
     priced = [m for m in rated if m["perf_raise_rate"] is not None]
     submitted = [m for m in members if m["evaluation_status"] in ("SUBMITTED", "CONFIRMED")]
@@ -331,17 +325,43 @@ def _stats(members: list[dict], grades: list[dict]) -> dict:
         status = "NOT_STARTED"
     else:
         status = "IN_PROGRESS"
+
+    counts = {g["code"]: sum(1 for m in rated if m["grade_code"] == g["code"]) for g in grades}
+    ratios = {code: (c / n if n else None) for code, c in counts.items()}
+    top = sum(1 for m in rated if m["is_top_grade"])
+    top_rate = top / n if n else None
+    # 경계값(정확히 10%·40%)은 경고하지 않는다 – 부동소수 오차 없이 인원수로 비교
+    exceeds = lambda count, limit: n > 0 and count > limit * n
+    alerts = []
+    for g in grades:
+        r = ratios[g["code"]]
+        if g["alert_on_exceed"] and g["max_ratio"] is not None and exceeds(counts[g["code"]], g["max_ratio"]):
+            alerts.append({"type": f"GRADE_{g['code']}",
+                           "message": f"{g['code']} 비율 {r * 100:.1f}% > 가이드 {g['max_ratio'] * 100:.0f}%"})
+    limit = cycle["top_grade_ratio_limit"]
+    if limit is not None and exceeds(top, limit):
+        top_codes = "·".join(g["code"] for g in grades if g["is_top_grade"])
+        alerts.append({"type": "TOP",
+                       "message": f"{top_codes} 비율 {top_rate * 100:.1f}% > 기준 {limit * 100:.0f}%"})
     return {
         "headcount": len(members),
         "rated": n,
         "submitted": len(submitted),
         "status": status,
-        "grade_counts": {g["code"]: sum(1 for m in rated if m["grade_code"] == g["code"])
-                         for g in grades},
-        "top_rate": sum(1 for m in rated if m["is_top_grade"]) / n if n else None,
+        "grade_counts": counts,
+        "grade_ratios": ratios,
+        "top_rate": top_rate,
+        "alerts": alerts,
         "avg_perf_raise_rate": avg("perf_raise_rate"),
         "avg_raise_rate": avg("raise_rate"),
     }
+
+
+def _org_factor(cur, cycle_id: int, dept_id: int):
+    """부서 상위평가율에 따른 A·B 성과인상률 조정계수 (DB 함수 fn_org_factor)"""
+    cur.execute("SELECT factor FROM fn_org_factor(%s, %s)", (cycle_id, dept_id))
+    row = cur.fetchone()
+    return row["factor"] if row else None
 
 
 @app.get("/api/hr/overview")
@@ -363,7 +383,8 @@ def hr_overview(cycle_id: int | None = None, user: User = Depends(hr_user)):
         all_members = []
         for d in departments:
             members = _members(cur, cycle, d["id"])
-            d.update(_stats(members, grades))
+            d.update(_stats(members, grades, cycle))
+            d["org_factor"] = _org_factor(cur, cycle["id"], d["id"])
             all_members += members
 
     return {
@@ -371,7 +392,7 @@ def hr_overview(cycle_id: int | None = None, user: User = Depends(hr_user)):
         "grades": grades,
         "policy": policy,
         "top_rate_limit": cycle["top_grade_ratio_limit"],      # 초과 시 경고
-        "total": _stats(all_members, grades),
+        "total": _stats(all_members, grades, cycle),
         "departments": [d for d in departments if d["headcount"] > 0],
         "user": user.to_dict(),
     }
@@ -384,4 +405,66 @@ def hr_department(dept_id: int, cycle_id: int | None = None, user: User = Depend
         grades = _grades(cur, cycle["id"])
         dept = _department(cur, dept_id)
         members = _members(cur, cycle, dept_id)
-    return {"department": dept, "stats": _stats(members, grades), "members": members}
+        stats = _stats(members, grades, cycle)
+        stats["org_factor"] = _org_factor(cur, cycle["id"], dept_id)
+    return {"department": dept, "stats": stats, "members": members}
+
+
+# ---------------------------------------------------------------------
+# API – 성과인상률 산출공식 (부서장 안내 팝업)
+# ---------------------------------------------------------------------
+@app.get("/api/formula")
+def formula(dept_id: int | None = None, cycle_id: int | None = None,
+            user: User = Depends(current_user)):
+    if dept_id is not None and not (user.can_edit(dept_id) or user.is_hr):
+        raise HTTPException(403, "이 부서를 조회할 권한이 없습니다.")
+    with get_pool().connection() as conn, conn.cursor() as cur:
+        cycle = _cycle(cur, cycle_id)
+        cur.execute(
+            """SELECT base_up_rate, top_rate_ref, org_factor_min, org_factor_max, perf_rate_unit
+                 FROM comp_policy WHERE cycle_id = %s""", (cycle["id"],))
+        policy = cur.fetchone()
+        cur.execute(
+            """SELECT jl.id, jl.code, lr.base_perf_rate
+                 FROM comp_level_rate lr JOIN job_level jl ON jl.id = lr.job_level_id
+                WHERE lr.cycle_id = %s ORDER BY jl.sort_order""", (cycle["id"],))
+        levels = cur.fetchall()
+        cur.execute(
+            """SELECT g.id, g.code, g.name, r.perf_factor, r.org_adjusted, r.base_up_applies,
+                      g.incentive_eligible, r.incentive_rate
+                 FROM comp_rule r JOIN evaluation_grade g ON g.id = r.grade_id
+                WHERE r.cycle_id = %s ORDER BY g.sort_order""", (cycle["id"],))
+        rules = cur.fetchall()
+
+        # 상위평가율별 조정계수 예시
+        cur.execute(
+            """SELECT r AS top_rate,
+                      round(LEAST(p.org_factor_max, GREATEST(p.org_factor_min, p.top_rate_ref / r)), 4) AS factor
+                 FROM comp_policy p, unnest(ARRAY[0.2, 0.3, 0.4, 0.5, 0.6, 0.8]::numeric[]) AS r
+                WHERE p.cycle_id = %s""", (cycle["id"],))
+        examples = cur.fetchall()
+
+        current = None
+        factor = 1
+        if dept_id is not None:
+            cur.execute("SELECT * FROM fn_org_factor(%s, %s)", (cycle["id"], dept_id))
+            current = cur.fetchone()
+            factor = current["factor"]
+
+        # 직급 × 등급 성과인상률표 (현재 부서 조정계수 기준, 부서 미지정 시 1.0)
+        matrix = []
+        for lv in levels:
+            row = {"level": lv["code"], "rates": {}}
+            for r in rules:
+                cur.execute("SELECT fn_perf_rate(%s, %s, %s, %s) AS perf",
+                            (cycle["id"], lv["id"], r["id"], factor))
+                perf = cur.fetchone()["perf"]
+                base = policy["base_up_rate"] if r["base_up_applies"] else 0
+                row["rates"][r["code"]] = {"perf": perf, "total": perf + base}
+            matrix.append(row)
+    for r in rules:
+        del r["id"]
+    for lv in levels:
+        del lv["id"]
+    return {"policy": policy, "levels": levels, "rules": rules, "examples": examples,
+            "current": current, "factor": factor, "matrix": matrix}

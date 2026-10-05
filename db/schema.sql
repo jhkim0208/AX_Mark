@@ -101,16 +101,23 @@ CREATE TABLE evaluation_grade (
     UNIQUE (cycle_id, sort_order)
 );
 
-CREATE TABLE grade_distribution_guide (        -- (선택) 등급별 배분 가이드
-    cycle_id   INT NOT NULL REFERENCES evaluation_cycle(id),
-    grade_id   INT NOT NULL REFERENCES evaluation_grade(id),
-    min_ratio  NUMERIC(5,4),
-    max_ratio  NUMERIC(5,4),
+-- 등급별 배분 가이드. alert_on_exceed = true 인 등급만 초과 시 경고 (A ≤10% 경고, B ≤30% 안내만)
+-- A·B 합계 상한은 evaluation_cycle.top_grade_ratio_limit (40%) 으로 별도 경고
+CREATE TABLE grade_distribution_guide (
+    cycle_id         INT NOT NULL REFERENCES evaluation_cycle(id),
+    grade_id         INT NOT NULL REFERENCES evaluation_grade(id),
+    min_ratio        NUMERIC(5,4),
+    max_ratio        NUMERIC(5,4),
+    alert_on_exceed  BOOLEAN NOT NULL DEFAULT false,
     PRIMARY KEY (cycle_id, grade_id)
 );
 
 -- ---------------------------------------------------------------------
 -- 3. 보상 정책 (주기별 – 매년 정책이 바뀌어도 과거 결과 재현 가능)
+--
+--   총인상률   = 기본인상률 × [등급이 기본인상 대상] + 성과인상률
+--   성과인상률 = 직급별 기준 성과인상률 × 등급계수 × 부서 조정계수(A·B 만)
+--   부서 조정계수 = clamp( 기준 상위평가율 ÷ 부서 상위평가율, 하한, 상한 )
 -- ---------------------------------------------------------------------
 CREATE TABLE comp_policy (                     -- 주기 공통 계산 파라미터
     cycle_id               INT PRIMARY KEY REFERENCES evaluation_cycle(id),
@@ -121,24 +128,41 @@ CREATE TABLE comp_policy (                     -- 주기 공통 계산 파라미
                            CHECK (incentive_base IN ('CURRENT',  -- 당해 연봉 기준
                                                      'NEXT')),   -- 차년도 연봉 기준
     company_payout_factor  NUMERIC(6,4) NOT NULL DEFAULT 1.0,   -- 전사 성과 지급률
-    base_up_rate           NUMERIC(6,4) NOT NULL DEFAULT 0      -- 기본인상률(전원 공통)
+    base_up_rate           NUMERIC(6,4) NOT NULL DEFAULT 0,     -- 기본인상률(기본인상 대상 등급 공통)
+    top_rate_ref           NUMERIC(5,4) NOT NULL DEFAULT 0.40   -- 기준 상위평가율 (조정계수 1.0 지점)
+                           CHECK (top_rate_ref > 0),
+    org_factor_min         NUMERIC(5,3) NOT NULL DEFAULT 0.7,   -- 조정계수 하한
+    org_factor_max         NUMERIC(5,3) NOT NULL DEFAULT 1.5,   -- 조정계수 상한
+    perf_rate_unit         NUMERIC(6,5) NOT NULL DEFAULT 0.001, -- 성과인상률 반올림 단위 (0.1%p)
+    CHECK (0 < org_factor_min AND org_factor_min <= 1 AND org_factor_max >= 1)
 );
 
--- 개인 평가등급 → 연봉등급 / 성과인상률 / 인센티브
---   총인상률 = comp_policy.base_up_rate(기본인상률, 전원 공통) + perf_raise_rate(성과인상률)
---   성과인상률은 오직 개인 평가등급으로만 결정된다 (등급당 1개 규칙).
+-- 직급별 기준 성과인상률 (B등급·조정계수 1.0 일 때의 성과인상률). CL2 → CL4 로 갈수록 낮음
+CREATE TABLE comp_level_rate (
+    cycle_id        INT NOT NULL REFERENCES evaluation_cycle(id),
+    job_level_id    INT NOT NULL REFERENCES job_level(id),
+    base_perf_rate  NUMERIC(6,4) NOT NULL CHECK (base_perf_rate > 0),
+    PRIMARY KEY (cycle_id, job_level_id)
+);
+
+-- 등급별 규칙
+--   perf_factor     : 등급계수 (A > B > C > 0, D = 0, E < 0)
+--   org_adjusted    : 부서 조정계수 적용 여부 (A·B)
+--   base_up_applies : 기본인상률 적용 여부 (D·E 는 미적용)
 CREATE TABLE comp_rule (
     id                      SERIAL PRIMARY KEY,
     cycle_id                INT NOT NULL REFERENCES evaluation_cycle(id),
     grade_id                INT NOT NULL REFERENCES evaluation_grade(id),
     pay_grade_code          VARCHAR(10),                    -- 연봉등급 코드 (예: P1~P5)
-    perf_raise_rate         NUMERIC(6,4) NOT NULL,          -- 성과인상률 (음수 가능)
+    perf_factor             NUMERIC(5,3) NOT NULL,
+    org_adjusted            BOOLEAN NOT NULL DEFAULT false,
+    base_up_applies         BOOLEAN NOT NULL DEFAULT true,
     incentive_rate          NUMERIC(6,4) NOT NULL DEFAULT 0,-- 인센티브율 (기준연봉 대비) – 세부 산식 확정 전 임시
     incentive_fixed_amount  BIGINT       NOT NULL DEFAULT 0,-- 정액 인센티브 – 세부 산식 확정 전 임시
     UNIQUE (cycle_id, grade_id)
 );
 
--- 등급 정책 위반 방지: 부호 규칙 / 인센티브 비대상 등급의 인센티브 설정 금지
+-- 등급 정책 위반 방지: 등급계수 부호 / 동결 등급의 기본인상 / 인센티브 비대상 등급의 인센티브
 CREATE FUNCTION trg_comp_rule_check() RETURNS trigger AS $$
 DECLARE
     g evaluation_grade%ROWTYPE;
@@ -147,13 +171,16 @@ BEGIN
     IF g.cycle_id <> NEW.cycle_id THEN
         RAISE EXCEPTION '다른 평가주기의 등급입니다 (grade=%)', g.code;
     END IF;
-    IF (g.raise_sign = 'POSITIVE' AND NEW.perf_raise_rate <= 0)
-       OR (g.raise_sign = 'ZERO' AND NEW.perf_raise_rate <> 0)
-       OR (g.raise_sign = 'NEGATIVE' AND NEW.perf_raise_rate >= 0) THEN
-        RAISE EXCEPTION '% 등급의 성과인상률은 % 이어야 합니다 (입력값 %)',
+    IF (g.raise_sign = 'POSITIVE' AND NEW.perf_factor <= 0)
+       OR (g.raise_sign = 'ZERO' AND NEW.perf_factor <> 0)
+       OR (g.raise_sign = 'NEGATIVE' AND NEW.perf_factor >= 0) THEN
+        RAISE EXCEPTION '% 등급의 성과인상률은 % 이어야 합니다 (등급계수 %)',
             g.code,
             CASE g.raise_sign WHEN 'POSITIVE' THEN '양수' WHEN 'ZERO' THEN '0(동결)' ELSE '음수' END,
-            NEW.perf_raise_rate;
+            NEW.perf_factor;
+    END IF;
+    IF g.raise_sign = 'ZERO' AND NEW.base_up_applies THEN
+        RAISE EXCEPTION '% 등급(동결)은 기본인상률도 적용할 수 없습니다', g.code;
     END IF;
     IF NOT g.incentive_eligible
        AND (NEW.incentive_rate <> 0 OR NEW.incentive_fixed_amount <> 0) THEN
@@ -167,7 +194,7 @@ CREATE TRIGGER comp_rule_check_trg
     BEFORE INSERT OR UPDATE ON comp_rule
     FOR EACH ROW EXECUTE FUNCTION trg_comp_rule_check();
 
-CREATE TABLE salary_band (                     -- (선택) 직급별 연봉 상·하한
+CREATE TABLE salary_band (                     -- 직급별 연봉 상·하한
     cycle_id      INT NOT NULL REFERENCES evaluation_cycle(id),
     job_level_id  INT NOT NULL REFERENCES job_level(id),
     min_salary    BIGINT,
@@ -267,14 +294,75 @@ RETURNS BIGINT AS $$
             END * unit)::BIGINT;
 $$ LANGUAGE sql IMMUTABLE;
 
+-- 평가 단위(부서)의 평가 대상: 부서원(부서장 제외) + 직속 하위 부서의 부서장
+CREATE FUNCTION fn_unit_targets(p_department_id INT)
+RETURNS SETOF INT AS $$
+    SELECT e.id
+      FROM employee e
+      JOIN department d ON d.id = e.department_id
+     WHERE e.department_id = p_department_id
+       AND e.id IS DISTINCT FROM d.head_employee_id
+       AND e.status = 'ACTIVE'
+    UNION
+    SELECT c.head_employee_id
+      FROM department c
+     WHERE c.parent_id = p_department_id
+       AND c.head_employee_id IS NOT NULL;
+$$ LANGUAGE sql STABLE;
+
+-- 직원이 평가받는 단위: 부서장이면 상위 부서, 아니면 소속 부서
+CREATE FUNCTION fn_eval_unit(p_employee_id INT)
+RETURNS INT AS $$
+    SELECT CASE WHEN d.head_employee_id = e.id THEN d.parent_id ELSE d.id END
+      FROM employee e JOIN department d ON d.id = e.department_id
+     WHERE e.id = p_employee_id;
+$$ LANGUAGE sql STABLE;
+
+-- 부서 상위평가율과 A·B 성과인상률 조정계수
+--   상위평가율 = 상위등급(A·B) 인원 ÷ 평가 입력 인원
+--   조정계수   = clamp(기준 상위평가율 ÷ 상위평가율, 하한, 상한)  – 상위평가가 없으면 1
+--   → 부서가 A·B 를 많이 줄수록 1인당 성과인상률이 낮아지고, 적게 줄수록 높아진다.
+--     (상·하한 안에서는 부서의 A·B 성과인상 재원 = 입력 인원 × 기준 상위평가율 로 일정)
+CREATE FUNCTION fn_org_factor(p_cycle_id INT, p_department_id INT)
+RETURNS TABLE (rated INT, top_count INT, top_rate NUMERIC, factor NUMERIC) AS $$
+    WITH cnt AS (
+        SELECT count(ev.grade_id)::INT                        AS rated,
+               (count(*) FILTER (WHERE g.is_top_grade))::INT  AS top_count
+          FROM fn_unit_targets(p_department_id) t(emp)
+          JOIN evaluation ev ON ev.employee_id = t.emp AND ev.cycle_id = p_cycle_id
+          LEFT JOIN evaluation_grade g ON g.id = ev.grade_id
+    )
+    SELECT cnt.rated, cnt.top_count,
+           CASE WHEN cnt.rated > 0 THEN round(cnt.top_count::NUMERIC / cnt.rated, 4) END,
+           CASE WHEN cnt.top_count = 0 THEN 1.0
+                ELSE round(LEAST(p.org_factor_max, GREATEST(p.org_factor_min,
+                         p.top_rate_ref * cnt.rated / cnt.top_count)), 4)
+           END
+      FROM cnt, comp_policy p
+     WHERE p.cycle_id = p_cycle_id;
+$$ LANGUAGE sql STABLE;
+
+-- 성과인상률 = 직급별 기준 성과인상률 × 등급계수 × (A·B 면 조정계수), 0.1%p 단위 반올림
+CREATE FUNCTION fn_perf_rate(p_cycle_id INT, p_job_level_id INT, p_grade_id INT, p_factor NUMERIC)
+RETURNS NUMERIC AS $$
+    SELECT round(lr.base_perf_rate * r.perf_factor
+                 * CASE WHEN r.org_adjusted THEN p_factor ELSE 1 END
+                 / p.perf_rate_unit) * p.perf_rate_unit
+      FROM comp_policy p
+      JOIN comp_rule r        ON r.cycle_id = p.cycle_id AND r.grade_id = p_grade_id
+      JOIN comp_level_rate lr ON lr.cycle_id = p.cycle_id AND lr.job_level_id = p_job_level_id
+     WHERE p.cycle_id = p_cycle_id;
+$$ LANGUAGE sql STABLE;
+
 -- 특정 직원 × 특정 등급의 차년도 처우 계산 (시뮬레이션의 단일 진입점)
---   총인상률 = 기본인상률(전원 공통) + 성과인상률(개인등급)
---   인센티브 = 지급 대상 등급(A·B)만 산정, 그 외 0
---   세부 로직이 확정되면 이 함수만 수정하면 화면/확정 처리에 그대로 반영된다.
+--   총인상률 = 기본인상률(D·E 제외) + 성과인상률
+--   같은 부서·같은 직급·같은 등급이면 성과인상률이 같다.
 CREATE FUNCTION fn_simulate_comp(p_cycle_id INT, p_employee_id INT, p_grade_id INT)
 RETURNS TABLE (
     grade_code          VARCHAR,
     pay_grade_code      VARCHAR,
+    org_top_rate        NUMERIC,
+    org_factor          NUMERIC,
     base_up_rate        NUMERIC,
     perf_raise_rate     NUMERIC,
     raise_rate          NUMERIC,
@@ -292,18 +380,21 @@ RETURNS TABLE (
     WITH ctx AS (
         SELECT c.eval_year, e.job_level_id, g.code AS grade_code, g.incentive_eligible,
                p.rounding_unit, p.rounding_mode, p.incentive_base,
-               p.company_payout_factor, p.base_up_rate
+               p.company_payout_factor, p.base_up_rate AS policy_base_up,
+               fn_eval_unit(e.id) AS unit
           FROM evaluation_cycle c
           JOIN comp_policy p       ON p.cycle_id = c.id
           JOIN employee e          ON e.id = p_employee_id
           JOIN evaluation_grade g  ON g.id = p_grade_id AND g.cycle_id = c.id
          WHERE c.id = p_cycle_id
     ),
+    org AS (
+        SELECT o.top_rate, COALESCE(o.factor, 1.0) AS factor
+          FROM ctx LEFT JOIN LATERAL fn_org_factor(p_cycle_id, ctx.unit) o ON true
+    ),
     rule AS (
-        SELECT r.*
-          FROM comp_rule r
-         WHERE r.cycle_id = p_cycle_id
-           AND r.grade_id = p_grade_id
+        SELECT r.* FROM comp_rule r
+         WHERE r.cycle_id = p_cycle_id AND r.grade_id = p_grade_id
     ),
     cur AS (
         SELECT ec.base_salary, ec.incentive_amount
@@ -311,19 +402,24 @@ RETURNS TABLE (
          WHERE ec.employee_id = p_employee_id
            AND ec.comp_year = ctx.eval_year
     ),
-    calc AS (
-        SELECT ctx.*, rule.pay_grade_code, rule.perf_raise_rate,
-               ctx.base_up_rate + rule.perf_raise_rate AS raise_rate,
+    rates AS (
+        SELECT ctx.*, org.top_rate, org.factor, rule.pay_grade_code,
                rule.incentive_rate, rule.incentive_fixed_amount,
+               CASE WHEN rule.base_up_applies THEN ctx.policy_base_up ELSE 0 END AS base_up,
+               fn_perf_rate(p_cycle_id, ctx.job_level_id, p_grade_id, org.factor) AS perf
+          FROM ctx, org, rule
+    ),
+    calc AS (
+        SELECT rates.*, rates.base_up + rates.perf AS raise,
                cur.base_salary AS cur_base, cur.incentive_amount AS cur_inc,
-               fn_round_amount(cur.base_salary * (1 + ctx.base_up_rate + rule.perf_raise_rate),
-                               ctx.rounding_unit, ctx.rounding_mode) AS raw_next_base,
+               fn_round_amount(cur.base_salary * (1 + rates.base_up + rates.perf),
+                               rates.rounding_unit, rates.rounding_mode) AS raw_next_base,
                b.min_salary, b.max_salary
-          FROM ctx
-          JOIN rule ON true
-          JOIN cur  ON true
+          FROM rates
+          JOIN cur ON true
           LEFT JOIN salary_band b
-                 ON b.cycle_id = p_cycle_id AND b.job_level_id = ctx.job_level_id
+                 ON b.cycle_id = p_cycle_id AND b.job_level_id = rates.job_level_id
+         WHERE rates.perf IS NOT NULL
     ),
     banded AS (
         SELECT calc.*,
@@ -342,8 +438,8 @@ RETURNS TABLE (
                ELSE 0 END AS next_inc
           FROM banded
     )
-    SELECT grade_code, pay_grade_code,
-           base_up_rate, perf_raise_rate, raise_rate,
+    SELECT grade_code, pay_grade_code, top_rate, factor,
+           base_up, perf, raise,
            cur_base, cur_inc, cur_base + cur_inc,
            next_base, next_inc, next_base + next_inc,
            next_base - cur_base,
@@ -381,6 +477,8 @@ CREATE TABLE comp_result (                     -- 확정 시점의 계산 결과
     evaluation_id      INT PRIMARY KEY REFERENCES evaluation(id),
     grade_code         VARCHAR(5)  NOT NULL,
     pay_grade_code     VARCHAR(10),
+    org_top_rate       NUMERIC(5,4),
+    org_factor         NUMERIC(6,4) NOT NULL,
     base_up_rate       NUMERIC(6,4) NOT NULL,
     perf_raise_rate    NUMERIC(6,4) NOT NULL,
     raise_rate         NUMERIC(6,4) NOT NULL,
@@ -412,11 +510,11 @@ BEGIN
     END IF;
 
     INSERT INTO comp_result
-          (evaluation_id, grade_code, pay_grade_code,
+          (evaluation_id, grade_code, pay_grade_code, org_top_rate, org_factor,
            base_up_rate, perf_raise_rate, raise_rate,
            cur_base_salary, cur_incentive, next_base_salary, next_incentive,
            delta_total, band_capped)
-    SELECT evaluation_id, grade_code, pay_grade_code,
+    SELECT evaluation_id, grade_code, pay_grade_code, org_top_rate, org_factor,
            base_up_rate, perf_raise_rate, raise_rate,
            cur_base_salary, cur_incentive, next_base_salary, next_incentive,
            delta_total, band_capped

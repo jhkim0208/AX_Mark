@@ -13,6 +13,7 @@
       <p class="sub" id="cycle-label">불러오는 중…</p>
     </div>
     <div class="topbar-right">
+      <button type="button" id="formula-btn" class="formula-btn">성과인상률 산출공식</button>
       <div class="user-box" id="user-box"></div>
     </div>
   </header>
@@ -40,16 +41,17 @@
               <th class="num">인원</th>
               <th>입력 현황</th>
               <th class="dist-col">등급 분포</th>
-              <th class="top-col">상위평가율</th>
+              <th class="num">A 비율</th>
+              <th class="top-col">상위평가율 (A·B)</th>
+              <th class="num">A·B 조정계수</th>
               <th class="num">평균 성과인상률</th>
-              <th class="num">평균 총인상률</th>
               <th>상태</th>
             </tr>
           </thead>
           <tbody id="dept-rows"></tbody>
         </table>
       </div>
-      <p class="card-foot">상위평가율 = A·B 등급 인원 ÷ 평가 입력 인원 (<span id="limit-note">기준 40%</span> 초과 시 ⚠ 초과 표시) · 평균은 평가가 입력된 인원 기준 · 부서를 누르면 부서원 현황이 열립니다.</p>
+      <p class="card-foot">상위평가율 = A·B 등급 인원 ÷ 평가 입력 인원 · <span id="limit-note">경고 기준</span> · A·B 조정계수 = 성과인상률 산출공식의 부서 조정계수 · 평균은 평가가 입력된 인원 기준 · 부서를 누르면 부서원 현황이 열립니다.</p>
     </section>
     <p id="status-msg" class="status-msg"></p>
   </main>
@@ -86,6 +88,17 @@
   </dialog>
 
   <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+
+  <dialog id="formula-dialog" class="dialog formula-dialog" aria-labelledby="formula-title">
+    <div class="dialog-head">
+      <div>
+        <h2 id="formula-title">성과인상률 산출공식</h2>
+        <p class="sub">부서장에게 안내되는 산출 방식입니다.</p>
+      </div>
+      <button type="button" class="icon-btn" id="formula-close" aria-label="닫기">✕</button>
+    </div>
+    <div class="formula-body" id="formula-body"></div>
+  </dialog>
 
   <script src="/static/common.js"></script>
   <script src="/static/hr.js"></script>

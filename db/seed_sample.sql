@@ -93,11 +93,11 @@ BEGIN
     LOOP
         FOR i IN 1 .. target.size - target.existing LOOP
             r := random();
-            -- CL2 60% / CL3 30% / CL4 10%
-            lvl := CASE WHEN r < 0.60 THEN 1 WHEN r < 0.90 THEN 2 ELSE 3 END;
-            -- 직급별 연봉 범위 (10만원 단위): CL2 4,000~5,800만 / CL3 6,000~8,000만 / CL4 8,500~1억500만
-            base := (ARRAY[40000000, 60000000, 85000000])[lvl]
-                    + (floor(random() * (ARRAY[180, 200, 200])[lvl]) * 100000)::BIGINT;
+            -- CL2 20% / CL3 30% / CL4 50%
+            lvl := CASE WHEN r < 0.20 THEN 1 WHEN r < 0.50 THEN 2 ELSE 3 END;
+            -- 직급별 현재 연봉 (10만원 단위): CL2 4,200~6,200만 / CL3 6,000~8,800만 / CL4 8,500~1억2,000만
+            base := (ARRAY[42000000, 60000000, 85000000])[lvl]
+                    + (floor(random() * (ARRAY[200, 280, 350])[lvl]) * 100000)::BIGINT;
 
             INSERT INTO employee (emp_no, name, department_id, job_level_id, hire_date)
             VALUES ('TMP', surnames[1 + floor(random() * 20)::INT]
@@ -121,7 +121,7 @@ UPDATE employee SET email = lower(emp_no) || '@example.com';
 -- ---------------------------------------------------------------------
 -- 평가주기 / 등급 / 정책
 -- ---------------------------------------------------------------------
--- 상위평가(A·B) 비율이 40% 를 넘으면 부서장·인사팀 화면에 '초과' 경고
+-- 상위평가(A·B) 비율이 40% 를 넘으면 부서장·인사팀 화면에 '초과' 경고 (A 단독 10% 초과도 경고)
 INSERT INTO evaluation_cycle (id, eval_year, name, status, start_date, end_date,
                               comp_effective_date, top_grade_ratio_limit)
 VALUES (1, 2026, '2026년 업적평가', 'OPEN', '2026-11-01', '2026-12-15', '2027-01-01', 0.40);
@@ -136,23 +136,46 @@ INSERT INTO evaluation_grade (cycle_id, code, name, sort_order, raise_sign,
     (1, 'D', '미흡', 4, 'ZERO',     false, false),
     (1, 'E', '부진', 5, 'NEGATIVE', false, false);
 
--- ※ 아래 인상률·인센티브 수치는 모두 임시값 (세부 수치 확정 시 교체)
-INSERT INTO comp_policy (cycle_id, rounding_unit, rounding_mode, incentive_base,
-                         company_payout_factor, base_up_rate)
-VALUES (1, 10000, 'FLOOR', 'CURRENT', 1.0, 0.0200);   -- 기본인상률 2% (임시)
+-- 등급별 배분 가이드: A ≤10% (초과 시 경고), B ≤30% (안내만). A·B 합계 40% 초과는 평가주기 상한으로 경고
+INSERT INTO grade_distribution_guide (cycle_id, grade_id, max_ratio, alert_on_exceed)
+SELECT 1, g.id, v.max_ratio, v.alert
+  FROM evaluation_grade g
+  JOIN (VALUES ('A', 0.10, true), ('B', 0.30, false)) AS v(code, max_ratio, alert)
+    ON v.code = g.code
+ WHERE g.cycle_id = 1;
 
-INSERT INTO comp_rule (cycle_id, grade_id, pay_grade_code, perf_raise_rate, incentive_rate)
-SELECT 1, g.id, 'P' || g.sort_order, v.perf, v.inc
-  FROM (VALUES ('A',  0.050, 0.15),
-               ('B',  0.030, 0.08),
-               ('C',  0.015, 0),
-               ('D',  0,     0),
-               ('E', -0.010, 0))
-       AS v(code, perf, inc)
+-- ※ 아래 수치는 모두 제안·임시값 (확정 시 교체)
+--   총인상률   = 기본인상률 2% (D·E 미적용) + 성과인상률
+--   성과인상률 = 직급별 기준률 × 등급계수 × 부서 조정계수(A·B)
+--   조정계수   = clamp(40% ÷ 부서 상위평가율, 0.7, 1.5)
+INSERT INTO comp_policy (cycle_id, rounding_unit, rounding_mode, incentive_base,
+                         company_payout_factor, base_up_rate,
+                         top_rate_ref, org_factor_min, org_factor_max, perf_rate_unit)
+VALUES (1, 10000, 'FLOOR', 'CURRENT', 1.0, 0.0200, 0.40, 0.7, 1.5, 0.001);
+
+-- 직급별 기준 성과인상률: CL2 4.0% > CL3 3.0% > CL4 2.0%
+INSERT INTO comp_level_rate (cycle_id, job_level_id, base_perf_rate) VALUES
+    (1, 1, 0.040),
+    (1, 2, 0.030),
+    (1, 3, 0.020);
+
+-- 등급계수 A 1.5 > B 1.0 > C 0.5 > D 0 > E -0.25, 조정계수는 A·B 만, D·E 는 기본인상 미적용
+INSERT INTO comp_rule (cycle_id, grade_id, pay_grade_code, perf_factor, org_adjusted,
+                       base_up_applies, incentive_rate)
+SELECT 1, g.id, 'P' || g.sort_order, v.factor, v.org_adj, v.base_up, v.inc
+  FROM (VALUES ('A',  1.50, true,  true,  0.15),
+               ('B',  1.00, true,  true,  0.08),
+               ('C',  0.50, false, true,  0),
+               ('D',  0,    false, false, 0),
+               ('E', -0.25, false, false, 0))
+       AS v(code, factor, org_adj, base_up, inc)
   JOIN evaluation_grade g ON g.cycle_id = 1 AND g.code = v.code;
 
+-- 직급별 연봉 상·하한 (국내 IT 기업 평균 수준을 가정한 예시)
 INSERT INTO salary_band (cycle_id, job_level_id, min_salary, max_salary) VALUES
-    (1, 1, 38000000, 60000000);    -- CL2 연봉 상한 6,000만 (예시)
+    (1, 1,  38000000,  70000000),   -- CL2 3,800만 ~ 7,000만
+    (1, 2,  55000000, 100000000),   -- CL3 5,500만 ~ 1억
+    (1, 3,  80000000, 140000000);   -- CL4 8,000만 ~ 1억4,000만
 
 -- ---------------------------------------------------------------------
 -- 진행 중인 평가 (인사팀 현황 화면 시연용)
