@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import auth
-from .auth import User, current_user
+from .auth import User, current_user, hr_user
 from .db import close_pool, get_pool
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -87,6 +87,7 @@ MEMBERS_SQL = f"""
            ec.base_salary    AS cur_base_salary,
            ec.incentive_amount AS cur_incentive,
            g.code            AS grade_code,
+           g.is_top_grade,
            ev.status         AS evaluation_status,
            s.pay_grade_code, s.base_up_rate, s.perf_raise_rate, s.raise_rate,
            s.next_base_salary, s.next_incentive, s.next_total,
@@ -121,11 +122,6 @@ def _editable(cycle, member, user: User, dept_id: int) -> bool:
             and member["evaluation_status"] in (None, "DRAFT"))
 
 
-def _require_view(user: User, dept_id: int) -> None:
-    if not user.can_view(dept_id):
-        raise HTTPException(403, "이 부서를 조회할 권한이 없습니다.")
-
-
 def _require_edit(user: User, dept_id: int) -> None:
     if not user.can_edit(dept_id):
         raise HTTPException(403, "이 부서의 평가를 입력할 권한이 없습니다.")
@@ -136,16 +132,64 @@ def _set_actor(cur, user: User) -> None:
     cur.execute("SELECT set_config('app.user', %s, true)", (user.emp_no,))
 
 
+def _grades(cur, cycle_id: int):
+    cur.execute(
+        """SELECT g.code, g.name, g.raise_sign, g.incentive_eligible, g.is_top_grade,
+                  gd.min_ratio, gd.max_ratio
+             FROM evaluation_grade g
+             LEFT JOIN grade_distribution_guide gd ON gd.grade_id = g.id
+            WHERE g.cycle_id = %s ORDER BY g.sort_order""",
+        (cycle_id,),
+    )
+    return cur.fetchall()
+
+
 # ---------------------------------------------------------------------
-# API
+# 화면
 # ---------------------------------------------------------------------
+def _page_user(request: Request) -> User | None:
+    try:
+        return auth.session_user(request)
+    except HTTPException:
+        return None
+
+
+@app.get("/login")
+def login_page(request: Request):
+    user = _page_user(request)
+    if user is not None:
+        return RedirectResponse(auth.home_path(user))
+    return FileResponse(STATIC_DIR / "login.html")
+
+
+@app.get("/change-password")
+def change_password_page(request: Request):
+    if _page_user(request) is None:
+        return RedirectResponse("/login")
+    return FileResponse(STATIC_DIR / "change-password.html")
+
+
 @app.get("/")
 def index(request: Request):
-    if request.session.get("employee_id") is None:
-        return RedirectResponse("/auth/login")
+    """부서장 평가 입력 화면"""
+    user = _page_user(request)
+    if user is None or user.must_change_password or not user.head_of:
+        return RedirectResponse("/login" if user is None else auth.home_path(user))
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/hr")
+def hr_page(request: Request):
+    """인사팀 부서별 현황 화면"""
+    user = _page_user(request)
+    if user is None or user.must_change_password or not user.is_hr:
+        return RedirectResponse("/login" if user is None else auth.home_path(user))
+    return FileResponse(STATIC_DIR / "hr.html")
+
+
+# ---------------------------------------------------------------------
+# API – 공통
+# ---------------------------------------------------------------------
 @app.get("/api/me")
 def me(user: User = Depends(current_user)):
     return user.to_dict()
@@ -155,33 +199,28 @@ def me(user: User = Depends(current_user)):
 def context(cycle_id: int | None = None, user: User = Depends(current_user)):
     with get_pool().connection() as conn, conn.cursor() as cur:
         cycle = _cycle(cur, cycle_id)
-        cur.execute(
-            """SELECT g.code, g.name, g.raise_sign, g.incentive_eligible,
-                      gd.min_ratio, gd.max_ratio
-                 FROM evaluation_grade g
-                 LEFT JOIN grade_distribution_guide gd ON gd.grade_id = g.id
-                WHERE g.cycle_id = %s ORDER BY g.sort_order""",
-            (cycle["id"],),
-        )
-        grades = cur.fetchall()
+        grades = _grades(cur, cycle["id"])
         cur.execute("SELECT base_up_rate FROM comp_policy WHERE cycle_id = %s", (cycle["id"],))
         policy = cur.fetchone()
         cur.execute(
             """SELECT d.id, d.name, d.parent_id, h.name AS head_name
                  FROM department d
                  LEFT JOIN employee h ON h.id = d.head_employee_id
-                ORDER BY d.code"""
+                WHERE d.id = ANY(%s)
+                ORDER BY d.code""",
+            (user.head_of,),
         )
-        departments = [d for d in cur.fetchall() if user.can_view(d["id"])]
-    for d in departments:
-        d["editable"] = user.can_edit(d["id"])
+        departments = cur.fetchall()                    # 본인이 부서장인 부서만
     return {"cycle": cycle, "grades": grades, "policy": policy, "departments": departments,
             "user": user.to_dict()}
 
 
+# ---------------------------------------------------------------------
+# API – 부서장 평가 입력
+# ---------------------------------------------------------------------
 @app.get("/api/departments/{dept_id}/sheet")
 def sheet(dept_id: int, cycle_id: int | None = None, user: User = Depends(current_user)):
-    _require_view(user, dept_id)
+    _require_edit(user, dept_id)
     with get_pool().connection() as conn, conn.cursor() as cur:
         cycle = _cycle(cur, cycle_id)
         dept = _department(cur, dept_id)
@@ -192,9 +231,7 @@ def sheet(dept_id: int, cycle_id: int | None = None, user: User = Depends(curren
         "cycle": cycle,
         "department": dept,
         "members": members,
-        "read_only": not user.can_edit(dept_id),
-        "can_submit": user.can_edit(dept_id)
-        and cycle["status"] == "OPEN"
+        "can_submit": cycle["status"] == "OPEN"
         and bool(members)
         and all(m["evaluation_status"] in (None, "DRAFT") for m in members),
     }
@@ -273,3 +310,79 @@ def submit(dept_id: int, cycle_id: int | None = None, user: User = Depends(curre
         )
         count = cur.rowcount
     return {"submitted": count}
+
+
+# ---------------------------------------------------------------------
+# API – 인사팀 현황
+# ---------------------------------------------------------------------
+def _stats(members: list[dict], grades: list[dict]) -> dict:
+    """상위평가율 = 상위등급(is_top_grade) 인원 / 평가 입력 인원
+       평균 성과인상률 = 평가 입력 인원의 성과인상률 단순 평균"""
+    rated = [m for m in members if m["grade_code"] is not None]
+    priced = [m for m in rated if m["perf_raise_rate"] is not None]
+    submitted = [m for m in members if m["evaluation_status"] in ("SUBMITTED", "CONFIRMED")]
+    n = len(rated)
+    avg = lambda key: sum(m[key] for m in priced) / len(priced) if priced else None
+    if not members:
+        status = "NONE"
+    elif len(submitted) == len(members):
+        status = "SUBMITTED"
+    elif n == 0:
+        status = "NOT_STARTED"
+    else:
+        status = "IN_PROGRESS"
+    return {
+        "headcount": len(members),
+        "rated": n,
+        "submitted": len(submitted),
+        "status": status,
+        "grade_counts": {g["code"]: sum(1 for m in rated if m["grade_code"] == g["code"])
+                         for g in grades},
+        "top_rate": sum(1 for m in rated if m["is_top_grade"]) / n if n else None,
+        "avg_perf_raise_rate": avg("perf_raise_rate"),
+        "avg_raise_rate": avg("raise_rate"),
+    }
+
+
+@app.get("/api/hr/overview")
+def hr_overview(cycle_id: int | None = None, user: User = Depends(hr_user)):
+    with get_pool().connection() as conn, conn.cursor() as cur:
+        cycle = _cycle(cur, cycle_id)
+        grades = _grades(cur, cycle["id"])
+        cur.execute("SELECT base_up_rate FROM comp_policy WHERE cycle_id = %s", (cycle["id"],))
+        policy = cur.fetchone()
+        cur.execute(
+            """SELECT d.id, d.code, d.name, d.parent_id, p.name AS parent_name,
+                      h.name AS head_name
+                 FROM department d
+                 LEFT JOIN department p ON p.id = d.parent_id
+                 LEFT JOIN employee h ON h.id = d.head_employee_id
+                ORDER BY COALESCE(d.parent_id, d.id), d.parent_id NULLS FIRST, d.code"""
+        )
+        departments = cur.fetchall()
+        all_members = []
+        for d in departments:
+            members = _members(cur, cycle, d["id"])
+            d.update(_stats(members, grades))
+            all_members += members
+
+    top_guide = [g["max_ratio"] for g in grades if g["is_top_grade"]]
+    return {
+        "cycle": cycle,
+        "grades": grades,
+        "policy": policy,
+        "top_rate_guide": sum(top_guide) if top_guide and None not in top_guide else None,
+        "total": _stats(all_members, grades),
+        "departments": [d for d in departments if d["headcount"] > 0],
+        "user": user.to_dict(),
+    }
+
+
+@app.get("/api/hr/departments/{dept_id}")
+def hr_department(dept_id: int, cycle_id: int | None = None, user: User = Depends(hr_user)):
+    with get_pool().connection() as conn, conn.cursor() as cur:
+        cycle = _cycle(cur, cycle_id)
+        grades = _grades(cur, cycle["id"])
+        dept = _department(cur, dept_id)
+        members = _members(cur, cycle, dept_id)
+    return {"department": dept, "stats": _stats(members, grades), "members": members}

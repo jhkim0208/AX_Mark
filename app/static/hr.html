@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>부서별 평가 현황 · 업적평가</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>부서별 평가 현황</h1>
+      <p class="sub" id="cycle-label">불러오는 중…</p>
+    </div>
+    <div class="topbar-right">
+      <div class="user-box" id="user-box"></div>
+    </div>
+  </header>
+
+  <main>
+    <section class="tiles">
+      <div class="tile"><span>평가 대상</span><strong id="t-headcount">-</strong><em id="t-headcount-sub"></em></div>
+      <div class="tile"><span>평가 입력률</span><strong id="t-progress">-</strong><em id="t-progress-sub"></em></div>
+      <div class="tile"><span>제출 완료 부서</span><strong id="t-submitted">-</strong></div>
+      <div class="tile"><span>전사 상위평가율 (A·B)</span><strong id="t-top">-</strong><em id="t-top-sub"></em></div>
+      <div class="tile"><span>전사 평균 성과인상률</span><strong id="t-perf">-</strong><em id="t-perf-sub"></em></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>부서별 현황</h2>
+        <div class="legend" id="legend"></div>
+      </div>
+      <div class="table-wrap">
+        <table class="hr-table">
+          <thead>
+            <tr>
+              <th>부서</th>
+              <th>부서장</th>
+              <th class="num">인원</th>
+              <th>입력 현황</th>
+              <th class="dist-col">등급 분포</th>
+              <th class="top-col">상위평가율</th>
+              <th class="num">평균 성과인상률</th>
+              <th class="num">평균 총인상률</th>
+              <th>상태</th>
+            </tr>
+          </thead>
+          <tbody id="dept-rows"></tbody>
+        </table>
+      </div>
+      <p class="card-foot">상위평가율 = A·B 등급 인원 ÷ 평가 입력 인원 · 평균은 평가가 입력된 인원 기준 · 부서를 누르면 부서원 현황이 열립니다.</p>
+    </section>
+    <p id="status-msg" class="status-msg"></p>
+  </main>
+
+  <dialog id="dept-dialog" class="dialog" aria-labelledby="dlg-title">
+    <div class="dialog-head">
+      <div>
+        <h2 id="dlg-title">-</h2>
+        <p class="sub" id="dlg-sub"></p>
+      </div>
+      <button type="button" class="icon-btn" id="dlg-close" aria-label="닫기">✕</button>
+    </div>
+    <div class="dialog-stats" id="dlg-stats"></div>
+    <div class="dialog-dist" id="dlg-dist"></div>
+    <div class="table-wrap dialog-table">
+      <table>
+        <thead>
+          <tr>
+            <th>사번</th>
+            <th>성명</th>
+            <th>직급</th>
+            <th>평가등급</th>
+            <th>상태</th>
+            <th class="num">성과인상률</th>
+            <th class="num">총인상률</th>
+            <th class="num">현재 연봉</th>
+            <th class="num">차년도 연봉</th>
+            <th class="num">연봉 증감</th>
+          </tr>
+        </thead>
+        <tbody id="dlg-rows"></tbody>
+      </table>
+    </div>
+  </dialog>
+
+  <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/hr.js"></script>
+</body>
+</html>

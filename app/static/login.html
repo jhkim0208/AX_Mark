@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>로그인 · 업적평가</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="auth-body">
+  <main class="auth-card">
+    <h1>업적평가 · 보상 시뮬레이션</h1>
+    <p class="sub">사번과 비밀번호로 로그인하세요.</p>
+    <form id="login-form" novalidate>
+      <label>아이디(사번)
+        <input id="login-id" name="username" autocomplete="username" required autofocus>
+      </label>
+      <label>비밀번호
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <p id="error" class="form-error" role="alert"></p>
+      <button type="submit" id="submit">로그인</button>
+    </form>
+    <p class="auth-help">비밀번호를 잊었거나 계정이 잠긴 경우 인사팀에 문의하세요.</p>
+  </main>
+  <script>
+    const form = document.getElementById("login-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const err = document.getElementById("error");
+      const btn = document.getElementById("submit");
+      err.textContent = "";
+      btn.disabled = true;
+      try {
+        const res = await fetch("/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            login_id: document.getElementById("login-id").value,
+            password: document.getElementById("password").value,
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.detail || "로그인에 실패했습니다.");
+        location.href = body.redirect;
+      } catch (ex) {
+        err.textContent = ex.message;
+        document.getElementById("password").value = "";
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -17,16 +17,11 @@
         <span>부서</span>
         <select id="dept-select"></select>
       </label>
-      <div class="user-box">
-        <span id="user-label"></span>
-        <a href="/auth/logout">로그아웃</a>
-      </div>
+      <div class="user-box" id="user-box"></div>
     </div>
   </header>
-  <div id="dev-banner" class="banner banner-warn" hidden>개발용 로그인 모드(AUTH_MODE=dev)입니다. 운영 환경에서는 사용하지 마세요.</div>
 
   <main>
-    <div id="readonly-banner" class="banner banner-info" hidden>조회 전용입니다. 평가 입력은 해당 부서장만 할 수 있습니다.</div>
     <section class="info-row">
       <div class="info">
         <span class="info-label">평가자(부서장)</span>
@@ -53,7 +48,7 @@
     </section>
 
     <section class="card">
-      <div class="table-wrap">
+      <div class="table-wrap table-scroll">
         <table>
           <thead>
             <tr>
@@ -84,6 +79,7 @@
     </section>
   </main>
 
+  <script src="/static/common.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

@@ -33,14 +33,27 @@ CREATE TABLE employee (                        -- 직원
     name           VARCHAR(50)  NOT NULL,
     department_id  INT NOT NULL REFERENCES department(id),
     job_level_id   INT NOT NULL REFERENCES job_level(id),
-    email          VARCHAR(200) UNIQUE,                 -- 사내 SSO 계정 매핑 키
+    email          VARCHAR(200) UNIQUE,
     hire_date      DATE NOT NULL,
     status         VARCHAR(10)  NOT NULL DEFAULT 'ACTIVE'
                    CHECK (status IN ('ACTIVE', 'LEAVE', 'RESIGNED'))
 );
 
+-- 로그인 계정 (ID/비밀번호). 로그인 ID = 사번, 비밀번호는 scrypt 해시만 저장
+CREATE TABLE user_account (
+    employee_id           INT PRIMARY KEY REFERENCES employee(id),
+    login_id              VARCHAR(50) NOT NULL UNIQUE,
+    password_hash         TEXT NOT NULL,
+    must_change_password  BOOLEAN NOT NULL DEFAULT true,   -- 초기/초기화 비밀번호는 변경 강제
+    failed_attempts       INT NOT NULL DEFAULT 0,
+    locked_until          TIMESTAMPTZ,                     -- 연속 실패 시 잠금
+    password_changed_at   TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    last_login_at         TIMESTAMPTZ,
+    is_active             BOOLEAN NOT NULL DEFAULT true
+);
+
 -- 시스템 역할. 부서장 권한은 department.head_employee_id 로 자동 부여되므로 별도 등록 불필요
---   HR_ADMIN : 전 부서 조회 (인사팀)
+--   HR_ADMIN : 전 부서 평가 현황 조회 (인사팀)
 CREATE TABLE app_user_role (
     employee_id  INT NOT NULL REFERENCES employee(id),
     role         VARCHAR(20) NOT NULL CHECK (role IN ('HR_ADMIN')),
@@ -72,6 +85,7 @@ CREATE TABLE evaluation_cycle (                -- 평가주기 (연 1회)
 -- 개인 평가등급 (5등급: A~E) – 주기별로 관리
 --   raise_sign         : 성과인상률 부호 규칙 (A·B·C 양수 / D 동결 / E 음수)
 --   incentive_eligible : 인센티브 지급 대상 여부 (A·B 만 지급)
+--   is_top_grade       : 상위평가 여부 (인사팀 현황의 상위평가율 산정, A·B)
 CREATE TABLE evaluation_grade (
     id                  SERIAL PRIMARY KEY,
     cycle_id            INT NOT NULL REFERENCES evaluation_cycle(id),
@@ -81,6 +95,7 @@ CREATE TABLE evaluation_grade (
     raise_sign          VARCHAR(8) NOT NULL
                         CHECK (raise_sign IN ('POSITIVE', 'ZERO', 'NEGATIVE')),
     incentive_eligible  BOOLEAN NOT NULL DEFAULT false,
+    is_top_grade        BOOLEAN NOT NULL DEFAULT false,
     UNIQUE (cycle_id, code),
     UNIQUE (cycle_id, sort_order)
 );
