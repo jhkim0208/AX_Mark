@@ -93,7 +93,8 @@ def sheet_member(client, dept, emp):
     return next(m for m in sheet["members"] if m["employee_id"] == emp), sheet["stats"]
 
 
-# 제안 수치: 기본 2% / 직급 기준률 CL2 4%·CL3 3%·CL4 2% / 등급계수 A1.5·B1.0·C0.5·D0·E-0.25
+# 1차 적용 수치: 기본 2% / 직급 기준률 CL2 4%·CL3 3%·CL4 2% / 등급계수 A1.5·B1.0·C0.5·D0
+#                E 는 직급별 고정 CL2 0%·CL3 -10%·CL4 -10%
 #            조정계수 = clamp(40% ÷ 상위평가율, 0.7, 1.5), 성과인상률 0.1%p 반올림
 def test_ab_raise_depends_on_department_top_rate(head):
     # 이서준(CL3, 72,000,000 / 인센티브 5,000,000)만 A → 상위평가율 100% → 조정계수 0.7
@@ -147,18 +148,32 @@ def test_level_rates_decrease_and_grades_ordered(client):
             assert rate[("CL2", g, f)] > rate[("CL3", g, f)] > rate[("CL4", g, f)]   # CL2 > CL3 > CL4
         for lv in ("CL2", "CL3", "CL4"):
             assert rate[(lv, "A", f)] > rate[(lv, "B", f)] > rate[(lv, "C", f)] > 0   # A > B > C
-            assert rate[(lv, "D", f)] == 0 and rate[(lv, "E", f)] < 0
+            assert rate[(lv, "D", f)] == 0
+        assert rate[("CL2", "E", f)] == 0                                       # E: CL2 동결
+        assert float(rate[("CL3", "E", f)]) == float(rate[("CL4", "E", f)]) == pytest.approx(-0.10)  # 10% 삭감
 
 
-def test_d_freezes_completely_and_e_is_negative(head):
+def test_d_freezes_completely(head):
     d = put_grade(head, 2, 4, "D").json()                            # 박지호 56,500,000
     assert d["base_up_rate"] == 0 and d["perf_raise_rate"] == 0 and d["raise_rate"] == 0
     assert d["next_base_salary"] == 56_500_000 and d["next_incentive"] == 0
 
-    e = put_grade(head, 2, 3, "E").json()                            # 이서준 CL3 72,000,000
-    assert e["base_up_rate"] == 0
-    assert e["perf_raise_rate"] == pytest.approx(-0.008)             # 3% × -0.25 = -0.75% → -0.8%
-    assert e["next_base_salary"] == 71_420_000
+
+def test_e_freezes_cl2_and_cuts_cl3_cl4_by_10_percent(head):
+    e2 = put_grade(head, 2, 4, "E").json()                           # 박지호 CL2 56,500,000
+    assert (e2["base_up_rate"], e2["perf_raise_rate"], e2["raise_rate"]) == (0, 0, 0)
+    assert e2["next_base_salary"] == 56_500_000
+
+    e3 = put_grade(head, 2, 3, "E").json()                           # 이서준 CL3 72,000,000
+    assert e3["base_up_rate"] == 0 and e3["raise_rate"] == pytest.approx(-0.10)
+    assert e3["next_base_salary"] == 64_800_000
+    assert e3["next_incentive"] == 0 and e3["delta_total"] == (64_800_000 - 72_000_000) - 5_000_000
+
+    # 삭감은 직급 밴드 하한보다 우선 (하한은 인상 시에만 적용)
+    with psycopg.connect(TEST_DB, autocommit=True) as conn:
+        conn.execute("UPDATE salary_band SET min_salary = 70000000 WHERE job_level_id = 2")
+    again, _ = sheet_member(head, 2, 3)
+    assert again["next_base_salary"] == 64_800_000 and again["band_capped"] is False
 
 
 def test_incentive_only_for_a_and_b(head):
@@ -174,7 +189,7 @@ def test_incentive_only_for_a_and_b(head):
     [
         ("A", "perf_factor", 0, "양수"),
         ("D", "perf_factor", 0.1, r"0\(동결\)"),
-        ("E", "perf_factor", 0.1, "음수"),
+        ("E", "perf_factor", 0.1, "0 이하"),
         ("D", "base_up_applies", True, "기본인상률도 적용할 수 없습니다"),
         ("C", "incentive_rate", 0.05, "인센티브 지급 대상이 아닙니다"),
     ],
@@ -440,3 +455,21 @@ def test_formula_for_hr_without_department(client):
     login(client, "E007")
     f = client.get("/api/formula").json()
     assert f["current"] is None and f["factor"] == 1
+
+
+def test_level_grade_override_sign_is_enforced(client):
+    with psycopg.connect(TEST_DB) as conn:
+        with pytest.raises(psycopg.errors.RaiseException, match="0 이하"):
+            conn.execute(
+                """UPDATE comp_level_grade_override SET perf_raise_rate = 0.01
+                    WHERE job_level_id = 1"""
+            )
+
+
+def test_formula_shows_e_fixed_rates(client):
+    login(client, "E007")
+    f = client.get("/api/formula").json()
+    e = next(r for r in f["rules"] if r["code"] == "E")
+    assert e["fixed_by_level"] == {"CL2": 0.0, "CL3": -0.1, "CL4": -0.1}
+    cl4 = next(r for r in f["matrix"] if r["level"] == "CL4")["rates"]
+    assert cl4["E"]["total"] == pytest.approx(-0.10)

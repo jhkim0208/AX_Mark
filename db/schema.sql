@@ -146,7 +146,8 @@ CREATE TABLE comp_level_rate (
 );
 
 -- 등급별 규칙
---   perf_factor     : 등급계수 (A > B > C > 0, D = 0, E < 0)
+--   perf_factor     : 등급계수 (A > B > C > 0, D = 0, E ≤ 0)
+--                     직급별로 고정값이 필요한 등급은 comp_level_grade_override 가 우선한다 (예: E)
 --   org_adjusted    : 부서 조정계수 적용 여부 (A·B)
 --   base_up_applies : 기본인상률 적용 여부 (D·E 는 미적용)
 CREATE TABLE comp_rule (
@@ -173,10 +174,10 @@ BEGIN
     END IF;
     IF (g.raise_sign = 'POSITIVE' AND NEW.perf_factor <= 0)
        OR (g.raise_sign = 'ZERO' AND NEW.perf_factor <> 0)
-       OR (g.raise_sign = 'NEGATIVE' AND NEW.perf_factor >= 0) THEN
+       OR (g.raise_sign = 'NEGATIVE' AND NEW.perf_factor > 0) THEN
         RAISE EXCEPTION '% 등급의 성과인상률은 % 이어야 합니다 (등급계수 %)',
             g.code,
-            CASE g.raise_sign WHEN 'POSITIVE' THEN '양수' WHEN 'ZERO' THEN '0(동결)' ELSE '음수' END,
+            CASE g.raise_sign WHEN 'POSITIVE' THEN '양수' WHEN 'ZERO' THEN '0(동결)' ELSE '0 이하' END,
             NEW.perf_factor;
     END IF;
     IF g.raise_sign = 'ZERO' AND NEW.base_up_applies THEN
@@ -193,6 +194,37 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER comp_rule_check_trg
     BEFORE INSERT OR UPDATE ON comp_rule
     FOR EACH ROW EXECUTE FUNCTION trg_comp_rule_check();
+
+-- 직급 × 등급 고정 성과인상률 (공식 대신 이 값을 그대로 적용, 조정계수 미적용)
+--   예) E등급: CL2 0%(동결), CL3·CL4 -10%(삭감) – 기본인상률 미적용이므로 총인상률과 같다
+CREATE TABLE comp_level_grade_override (
+    cycle_id         INT NOT NULL REFERENCES evaluation_cycle(id),
+    job_level_id     INT NOT NULL REFERENCES job_level(id),
+    grade_id         INT NOT NULL REFERENCES evaluation_grade(id),
+    perf_raise_rate  NUMERIC(6,4) NOT NULL,
+    PRIMARY KEY (cycle_id, job_level_id, grade_id)
+);
+
+CREATE FUNCTION trg_level_grade_override_check() RETURNS trigger AS $$
+DECLARE
+    g evaluation_grade%ROWTYPE;
+BEGIN
+    SELECT * INTO g FROM evaluation_grade WHERE id = NEW.grade_id;
+    IF (g.raise_sign = 'POSITIVE' AND NEW.perf_raise_rate <= 0)
+       OR (g.raise_sign = 'ZERO' AND NEW.perf_raise_rate <> 0)
+       OR (g.raise_sign = 'NEGATIVE' AND NEW.perf_raise_rate > 0) THEN
+        RAISE EXCEPTION '% 등급의 성과인상률은 % 이어야 합니다 (입력값 %)',
+            g.code,
+            CASE g.raise_sign WHEN 'POSITIVE' THEN '양수' WHEN 'ZERO' THEN '0(동결)' ELSE '0 이하' END,
+            NEW.perf_raise_rate;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER level_grade_override_check_trg
+    BEFORE INSERT OR UPDATE ON comp_level_grade_override
+    FOR EACH ROW EXECUTE FUNCTION trg_level_grade_override_check();
 
 CREATE TABLE salary_band (                     -- 직급별 연봉 상·하한
     cycle_id      INT NOT NULL REFERENCES evaluation_cycle(id),
@@ -343,14 +375,19 @@ RETURNS TABLE (rated INT, top_count INT, top_rate NUMERIC, factor NUMERIC) AS $$
 $$ LANGUAGE sql STABLE;
 
 -- 성과인상률 = 직급별 기준 성과인상률 × 등급계수 × (A·B 면 조정계수), 0.1%p 단위 반올림
+--   직급 × 등급 고정값(comp_level_grade_override)이 있으면 그 값을 그대로 사용
 CREATE FUNCTION fn_perf_rate(p_cycle_id INT, p_job_level_id INT, p_grade_id INT, p_factor NUMERIC)
 RETURNS NUMERIC AS $$
-    SELECT round(lr.base_perf_rate * r.perf_factor
-                 * CASE WHEN r.org_adjusted THEN p_factor ELSE 1 END
-                 / p.perf_rate_unit) * p.perf_rate_unit
+    SELECT COALESCE(
+               o.perf_raise_rate,
+               round(lr.base_perf_rate * r.perf_factor
+                     * CASE WHEN r.org_adjusted THEN p_factor ELSE 1 END
+                     / p.perf_rate_unit) * p.perf_rate_unit)
       FROM comp_policy p
       JOIN comp_rule r        ON r.cycle_id = p.cycle_id AND r.grade_id = p_grade_id
       JOIN comp_level_rate lr ON lr.cycle_id = p.cycle_id AND lr.job_level_id = p_job_level_id
+      LEFT JOIN comp_level_grade_override o
+             ON o.cycle_id = p.cycle_id AND o.job_level_id = p_job_level_id AND o.grade_id = p_grade_id
      WHERE p.cycle_id = p_cycle_id;
 $$ LANGUAGE sql STABLE;
 
@@ -422,8 +459,11 @@ RETURNS TABLE (
          WHERE rates.perf IS NOT NULL
     ),
     banded AS (
+        -- 밴드 상한은 항상 적용, 하한은 인상일 때만 적용 (삭감은 하한보다 우선)
         SELECT calc.*,
-               LEAST(GREATEST(raw_next_base, COALESCE(min_salary, raw_next_base)),
+               LEAST(GREATEST(raw_next_base,
+                              CASE WHEN raise >= 0 THEN COALESCE(min_salary, raw_next_base)
+                                   ELSE raw_next_base END),
                      COALESCE(max_salary, raw_next_base)) AS next_base
           FROM calc
     ),

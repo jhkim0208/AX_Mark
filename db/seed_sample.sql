@@ -144,7 +144,7 @@ SELECT 1, g.id, v.max_ratio, v.alert
     ON v.code = g.code
  WHERE g.cycle_id = 1;
 
--- ※ 아래 수치는 모두 제안·임시값 (확정 시 교체)
+-- ※ 아래 수치는 1차 적용 수치 (정책 확정 시 테이블 값만 교체)
 --   총인상률   = 기본인상률 2% (D·E 미적용) + 성과인상률
 --   성과인상률 = 직급별 기준률 × 등급계수 × 부서 조정계수(A·B)
 --   조정계수   = clamp(40% ÷ 부서 상위평가율, 0.7, 1.5)
@@ -159,7 +159,8 @@ INSERT INTO comp_level_rate (cycle_id, job_level_id, base_perf_rate) VALUES
     (1, 2, 0.030),
     (1, 3, 0.020);
 
--- 등급계수 A 1.5 > B 1.0 > C 0.5 > D 0 > E -0.25, 조정계수는 A·B 만, D·E 는 기본인상 미적용
+-- 등급계수 A 1.5 > B 1.0 > C 0.5 > D 0, 조정계수는 A·B 만, D·E 는 기본인상 미적용
+-- E 는 공식 대신 직급별 고정값(아래 comp_level_grade_override) 적용
 INSERT INTO comp_rule (cycle_id, grade_id, pay_grade_code, perf_factor, org_adjusted,
                        base_up_applies, incentive_rate)
 SELECT 1, g.id, 'P' || g.sort_order, v.factor, v.org_adj, v.base_up, v.inc
@@ -167,11 +168,17 @@ SELECT 1, g.id, 'P' || g.sort_order, v.factor, v.org_adj, v.base_up, v.inc
                ('B',  1.00, true,  true,  0.08),
                ('C',  0.50, false, true,  0),
                ('D',  0,    false, false, 0),
-               ('E', -0.25, false, false, 0))
+               ('E',  0,    false, false, 0))
        AS v(code, factor, org_adj, base_up, inc)
   JOIN evaluation_grade g ON g.cycle_id = 1 AND g.code = v.code;
 
--- 직급별 연봉 상·하한 (국내 IT 기업 평균 수준을 가정한 예시)
+-- E등급 직급별 고정 성과인상률: CL2 0%(동결), CL3·CL4 -10%(삭감)
+INSERT INTO comp_level_grade_override (cycle_id, job_level_id, grade_id, perf_raise_rate)
+SELECT 1, v.lvl, g.id, v.rate
+  FROM (VALUES (1, 0.0), (2, -0.10), (3, -0.10)) AS v(lvl, rate)
+  JOIN evaluation_grade g ON g.cycle_id = 1 AND g.code = 'E';
+
+-- 직급별 연봉 상·하한 (국내 IT 기업 평균 수준을 가정한 예시). 하한은 인상 시에만 적용
 INSERT INTO salary_band (cycle_id, job_level_id, min_salary, max_salary) VALUES
     (1, 1,  38000000,  70000000),   -- CL2 3,800만 ~ 7,000만
     (1, 2,  55000000, 100000000),   -- CL3 5,500만 ~ 1억

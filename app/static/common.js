@@ -65,6 +65,9 @@ async function openFormula(deptId = null) {
     const adjusted = f.rules.filter((r) => r.org_adjusted).map((r) => r.code).join("·");
     const noBase = f.rules.filter((r) => !r.base_up_applies).map((r) => r.code).join("·");
     const cur = f.current;
+    const fixedText = (r) => Object.entries(r.fixed_by_level)
+      .map(([lv, v]) => `${lv} ${Number(v) === 0 ? "0%(동결)" : signedPct(v)}`).join(", ");
+    const fixedRules = f.rules.filter((r) => r.fixed_by_level);
     $("formula-body").innerHTML = `
       <div class="formula-box">
         <p><b>총인상률</b> = 기본인상률 <span class="muted">(${pct(p.base_up_rate)}${noBase ? `, ${noBase} 등급 미적용` : ""})</span> + 성과인상률</p>
@@ -77,7 +80,8 @@ async function openFormula(deptId = null) {
         <li>부서에서 ${adjusted}를 <b>적게 줄수록</b> ${adjusted} 1인당 성과인상률이 <b>높아지고</b>, 많이 줄수록 낮아집니다.
             (범위 안에서는 부서의 ${adjusted} 성과인상 재원이 일정)</li>
         <li>같은 부서 · 같은 직급 · 같은 등급이면 성과인상률이 같습니다. 같은 CL4 A등급이라도 부서의 상위평가율에 따라 달라집니다.</li>
-        <li>등급별 차등: A &gt; B &gt; C, D는 성과인상률·기본인상률 모두 0% (동결), E는 마이너스.</li>
+        <li>등급별 차등: A &gt; B &gt; C, D는 성과인상률·기본인상률 모두 0% (동결).</li>
+        ${fixedRules.map((r) => `<li><b>${r.code}등급</b>은 공식 대신 직급별 고정 적용 (기본인상률 미적용): ${fixedText(r)}</li>`).join("")}
         <li>성과인상률은 ${(p.perf_rate_unit * 100).toFixed(1)}%p 단위로 반올림합니다.</li>
       </ul>
 
@@ -93,7 +97,7 @@ async function openFormula(deptId = null) {
           <h3>등급계수</h3>
           <table class="mini">
             <thead><tr><th>등급</th><th class="num">계수</th><th>조정계수</th><th>기본인상</th></tr></thead>
-            <tbody>${f.rules.map((r) => `<tr><td>${r.code} ${esc(r.name)}</td><td class="num">${Number(r.perf_factor).toFixed(2)}</td>
+            <tbody>${f.rules.map((r) => `<tr><td>${r.code} ${esc(r.name)}</td><td class="num">${r.fixed_by_level ? "직급별 고정" : Number(r.perf_factor).toFixed(2)}</td>
               <td>${r.org_adjusted ? "적용" : "-"}</td><td>${r.base_up_applies ? "적용" : "미적용"}</td></tr>`).join("")}</tbody>
           </table>
         </div>
@@ -120,7 +124,7 @@ async function openFormula(deptId = null) {
           return `<td class="num"><b>${signedPct(v.perf)}</b><br><span class="muted">총 ${pct(v.total)}</span></td>`;
         }).join("")}</tr>`).join("")}</tbody>
       </table>
-      <p class="muted small">표의 굵은 값은 성과인상률, 아래는 기본인상률을 더한 총인상률입니다. 수치는 제안·임시값입니다.
+      <p class="muted small">표의 굵은 값은 성과인상률, 아래는 기본인상률을 더한 총인상률입니다. (1차 적용 수치)
         예) ${esc(f.levels[0]?.code ?? "")} A등급 = ${pct(f.levels[0]?.base_perf_rate)} × ${Number(ruleOf("A")?.perf_factor ?? 0).toFixed(1)} × ${Number(f.factor).toFixed(2)}</p>`;
   } catch (err) {
     $("formula-body").innerHTML = `<p class="form-error">${esc(err.message)}</p>`;

@@ -435,6 +435,16 @@ def formula(dept_id: int | None = None, cycle_id: int | None = None,
                  FROM comp_rule r JOIN evaluation_grade g ON g.id = r.grade_id
                 WHERE r.cycle_id = %s ORDER BY g.sort_order""", (cycle["id"],))
         rules = cur.fetchall()
+        cur.execute(
+            """SELECT g.code AS grade, jl.code AS level, o.perf_raise_rate
+                 FROM comp_level_grade_override o
+                 JOIN evaluation_grade g ON g.id = o.grade_id
+                 JOIN job_level jl ON jl.id = o.job_level_id
+                WHERE o.cycle_id = %s ORDER BY g.sort_order, jl.sort_order""", (cycle["id"],))
+        overrides = cur.fetchall()
+        for r in rules:                                  # 직급별 고정값이 있는 등급 (예: E)
+            r["fixed_by_level"] = {o["level"]: o["perf_raise_rate"] for o in overrides
+                                   if o["grade"] == r["code"]} or None
 
         # 상위평가율별 조정계수 예시
         cur.execute(
