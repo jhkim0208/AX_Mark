@@ -67,11 +67,14 @@
           </div>
           <div class="actions">
             <span id="status-msg" class="status-msg"></span>
+            <span id="dirty-note" class="dirty-note" hidden></span>
+            <button type="button" id="discard-btn" class="secondary-btn" disabled>변경 취소</button>
+            <button type="button" id="save-btn" class="save-btn" disabled>임시저장</button>
             <button id="submit-btn" type="button">평가 제출</button>
           </div>
         </div>
       </div>
-      <div class="table-wrap table-scroll">
+      <div class="table-wrap table-page">
         <table>
           <thead>
             <tr>
@@ -100,7 +103,7 @@
         <h2 id="formula-title">성과인상률 산출공식</h2>
         <p class="sub">평가등급에 따라 차년도 인상률이 어떻게 정해지는지 안내합니다.</p>
       </div>
-      <button type="button" class="icon-btn" id="formula-close" aria-label="닫기">✕</button>
+      <button type="button" class="icon-btn dialog-close" id="formula-close" aria-label="닫기" title="닫기">✕</button>
     </div>
     <div class="formula-body" id="formula-body"></div>
   </dialog>

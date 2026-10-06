@@ -510,3 +510,39 @@ def test_bulk_rejects_submitted(head):
     bulk(head, 2, [m["employee_id"] for m in members], "C")
     head.post("/api/departments/2/submit")
     assert bulk(head, 2, [3], "B").status_code == 409
+
+
+# ---------------------------------------------------------------------
+# 임시저장 – 저장 전 변경은 미리보기 계산만 하고 DB에 남기지 않는다
+# ---------------------------------------------------------------------
+def changes(*pairs):
+    return {"changes": [{"employee_id": e, "grade_code": g} for e, g in pairs]}
+
+
+def test_preview_calculates_without_saving(head):
+    res = head.post("/api/departments/2/preview", json=changes((3, "A"), (4, "C"), (5, "C")))
+    assert res.status_code == 200
+    sheet = res.json()
+    a = next(m for m in sheet["members"] if m["employee_id"] == 3)
+    assert a["grade_code"] == "A" and a["perf_raise_rate"] == pytest.approx(0.054)   # 조정계수 1.2
+    assert sheet["stats"]["org_factor"] == pytest.approx(1.2)
+    # 저장되지 않음 – 다시 읽으면 초기 상태, 이력도 남지 않음
+    assert db_rows("SELECT count(*) FROM evaluation WHERE employee_id IN (3, 4, 5)")[0][0] == 0
+    assert db_rows("""SELECT count(*) FROM evaluation_history h JOIN evaluation ev ON ev.id = h.evaluation_id
+                       WHERE ev.employee_id IN (3, 4, 5)""")[0][0] == 0
+    assert all(m["grade_code"] is None for m in head.get("/api/departments/2/sheet").json()["members"])
+
+
+def test_save_persists_and_survives_relogin(head):
+    res = head.post("/api/departments/2/save", json=changes((3, "A"), (4, "B"), (5, None)))
+    assert res.json() == {"saved": 3}
+    login(head, "E002")                                              # 로그아웃 후 재접속
+    members = {m["employee_id"]: m for m in head.get("/api/departments/2/sheet").json()["members"]}
+    assert (members[3]["grade_code"], members[4]["grade_code"], members[5]["grade_code"]) == ("A", "B", None)
+    assert members[3]["evaluation_status"] == "DRAFT"
+
+
+def test_preview_and_save_validate_targets(head):
+    assert head.post("/api/departments/2/preview", json=changes((9, "A"))).status_code == 403
+    assert head.post("/api/departments/2/save", json=changes((3, "A"), (9, "A"))).status_code == 403
+    assert db_rows("SELECT count(*) FROM evaluation WHERE employee_id = 3")[0][0] == 0

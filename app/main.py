@@ -212,10 +212,14 @@ def sheet(dept_id: int, cycle_id: int | None = None, user: User = Depends(curren
     _require_edit(user, dept_id)
     with get_pool().connection() as conn, conn.cursor() as cur:
         cycle = _cycle(cur, cycle_id)
-        dept = _department(cur, dept_id)
-        members = _members(cur, cycle, dept_id)
-        stats = _stats(members, _grades(cur, cycle["id"]), cycle)
-        stats["org_factor"] = _org_factor(cur, cycle["id"], dept_id)
+        return _sheet_data(cur, cycle, dept_id, user)
+
+
+def _sheet_data(cur, cycle, dept_id: int, user: User) -> dict:
+    dept = _department(cur, dept_id)
+    members = _members(cur, cycle, dept_id)
+    stats = _stats(members, _grades(cur, cycle["id"]), cycle)
+    stats["org_factor"] = _org_factor(cur, cycle["id"], dept_id)
     for m in members:
         m["editable"] = _editable(cycle, m, user, dept_id)
     return {
@@ -284,6 +288,49 @@ def save_grade(dept_id: int, employee_id: int, body: GradeInput,
         member = _members(cur, cycle, dept_id, employee_id)[0]
     member["editable"] = _editable(cycle, member, user, dept_id)
     return member
+
+
+class GradeChange(BaseModel):
+    employee_id: int
+    grade_code: str | None = None
+
+
+class ChangesInput(BaseModel):
+    changes: list[GradeChange]
+
+
+def _apply_changes(cur, cycle, dept_id: int, user: User, changes: list[GradeChange]) -> int:
+    by_code: dict[str | None, list[int]] = {}
+    for c in changes:
+        by_code.setdefault(c.grade_code or None, []).append(c.employee_id)
+    for code, ids in by_code.items():
+        _save_grades(cur, cycle, dept_id, user, ids, code)
+    return len({c.employee_id for c in changes})
+
+
+@app.post("/api/departments/{dept_id}/preview")
+def preview(dept_id: int, body: ChangesInput,
+            cycle_id: int | None = None, user: User = Depends(current_user)):
+    """저장하지 않은 화면상의 변경을 반영했을 때의 결과를 계산만 하고 DB에는 남기지 않는다.
+       (조정계수가 부서 전체 등급에 따라 달라지므로 서버에서 같은 함수로 계산 후 롤백)"""
+    _require_edit(user, dept_id)
+    with get_pool().connection() as conn, conn.cursor() as cur:
+        cycle = _cycle(cur, cycle_id)
+        with conn.transaction(force_rollback=True):
+            _apply_changes(cur, cycle, dept_id, user, body.changes)
+            return _sheet_data(cur, cycle, dept_id, user)
+
+
+@app.post("/api/departments/{dept_id}/save")
+def save_changes(dept_id: int, body: ChangesInput,
+                 cycle_id: int | None = None, user: User = Depends(current_user)):
+    """임시저장: 화면에서 바꾼 등급을 한 번에 저장(DRAFT). 저장 전에는 DB에 남지 않는다."""
+    _require_edit(user, dept_id)
+    with get_pool().connection() as conn, conn.cursor() as cur:
+        _set_actor(cur, user)
+        cycle = _cycle(cur, cycle_id)
+        saved = _apply_changes(cur, cycle, dept_id, user, body.changes)
+    return {"saved": saved}
 
 
 class BulkGradeInput(BaseModel):

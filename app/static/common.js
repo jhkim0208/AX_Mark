@@ -29,6 +29,8 @@ async function api(path, options = {}) {
 }
 
 async function logout() {
+  if (window.confirmLeave && !window.confirmLeave()) return;   // 저장하지 않은 변경 확인
+  window.skipLeaveGuard = true;
   await fetch("/auth/logout", { method: "POST" }).catch(() => {});
   location.href = "/login";
 }
@@ -37,7 +39,7 @@ async function logout() {
 function renderUserBox(user, current) {
   const roles = [user.head_of.length ? "부서장" : null, user.is_hr ? "인사팀" : null].filter(Boolean);
   const links = [
-    user.head_of.length ? { href: "/", label: "평가 입력" } : null,
+    user.head_of.length ? { href: "/", label: "부서 평가하기" } : null,
     user.is_hr ? { href: "/hr", label: "부서별 현황" } : null,
   ].filter(Boolean);
   $("user-box").innerHTML = `
