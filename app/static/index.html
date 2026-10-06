@@ -55,12 +55,28 @@
     </section>
 
     <section class="card">
+      <!-- 등급별 인원·한도 + 일괄 입력: 스크롤해도 상단에 고정 -->
+      <div class="grade-toolbar" id="grade-toolbar">
+        <div id="distribution" class="distribution"></div>
+        <div class="toolbar-row">
+          <div class="bulk-bar">
+            <span id="bulk-count" class="bulk-count">선택 0명</span>
+            <select id="bulk-grade" aria-label="일괄 적용할 평가등급"></select>
+            <button type="button" id="bulk-apply" disabled>선택 인원에 일괄 적용</button>
+            <button type="button" id="bulk-clear" class="link-btn" disabled>선택 해제</button>
+          </div>
+          <div class="actions">
+            <span id="status-msg" class="status-msg"></span>
+            <button id="submit-btn" type="button">평가 제출</button>
+          </div>
+        </div>
+      </div>
       <div class="table-wrap table-scroll">
         <table>
           <thead>
             <tr>
               <th>사번</th>
-              <th>성명</th>
+              <th><label class="check-label"><input type="checkbox" id="check-all" aria-label="전체 선택"> 성명</label></th>
               <th>직급</th>
               <th class="num">현재 연봉</th>
               <th class="grade-col">평가등급</th>
@@ -76,14 +92,6 @@
         </table>
       </div>
     </section>
-
-    <section class="footer-row">
-      <div id="distribution" class="distribution"></div>
-      <div class="actions">
-        <span id="status-msg" class="status-msg"></span>
-        <button id="submit-btn" type="button">평가 제출</button>
-      </div>
-    </section>
   </main>
 
   <dialog id="formula-dialog" class="dialog formula-dialog" aria-labelledby="formula-title">
@@ -95,6 +103,19 @@
       <button type="button" class="icon-btn" id="formula-close" aria-label="닫기">✕</button>
     </div>
     <div class="formula-body" id="formula-body"></div>
+  </dialog>
+
+  <!-- 평가 기준율 초과 경고 -->
+  <dialog id="warn-dialog" class="dialog warn-dialog" aria-labelledby="warn-title">
+    <div class="warn-body">
+      <h2 id="warn-title">⚠ 평가 기준율을 초과했습니다.</h2>
+      <ul id="warn-list" class="warn-list"></ul>
+      <p class="sub">기준을 초과한 평가는 인사팀 검토 대상이 됩니다. 그래도 입력하시겠습니까?</p>
+      <div class="warn-actions">
+        <button type="button" id="warn-cancel" class="secondary-btn">취소</button>
+        <button type="button" id="warn-ok" class="danger-btn">그래도 입력</button>
+      </div>
+    </div>
   </dialog>
 
   <script src="/static/common.js"></script>

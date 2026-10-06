@@ -1,9 +1,74 @@
-const state = { ctx: null, sheet: null, deptId: null, reqId: 0 };
+const state = { ctx: null, sheet: null, deptId: null, reqId: 0, selected: new Set() };
 
 function setStatus(msg, isError = false) {
   const el = $("status-msg");
   el.textContent = msg;
   el.classList.toggle("error", isError);
+}
+
+// ---------------------------------------------------------------------
+// 등급 한도 (부서 전체 인원 기준)
+//   A 가이드 10% → 32명이면 A 최대 3명, A·B 기준 40% → 최대 12명.
+//   입력 도중에도 "앞으로 몇 명까지 줄 수 있는지"가 보이도록 전체 인원을 기준으로 판단한다.
+// ---------------------------------------------------------------------
+const quota = (ratio, n) => Math.floor(ratio * n + 1e-9);
+
+function gradeLimits() {
+  const n = state.sheet.members.length;
+  const limits = [];
+  for (const g of state.ctx.grades) {
+    if (g.alert_on_exceed && g.max_ratio != null) {
+      limits.push({ type: `GRADE_${g.code}`, label: g.code, codes: [g.code], ratio: g.max_ratio, max: quota(g.max_ratio, n) });
+    }
+  }
+  const limit = state.ctx.cycle.top_grade_ratio_limit;
+  if (limit != null) {
+    const codes = state.ctx.grades.filter((g) => g.is_top_grade).map((g) => g.code);
+    limits.push({ type: "TOP", label: codes.join("·"), codes, ratio: limit, max: quota(limit, n) });
+  }
+  return limits;
+}
+
+// changes: Map(employee_id → 새 등급 코드 | null). 적용 후 등급별 인원을 계산
+function countGrades(changes = new Map()) {
+  const counts = Object.fromEntries(state.ctx.grades.map((g) => [g.code, 0]));
+  for (const m of state.sheet.members) {
+    const code = changes.has(m.employee_id) ? changes.get(m.employee_id) : m.grade_code;
+    if (code) counts[code] += 1;
+  }
+  return counts;
+}
+
+const sumCodes = (counts, codes) => codes.reduce((a, c) => a + counts[c], 0);
+
+// 이번 변경으로 한도를 넘는 항목 (이미 넘은 상태에서 더 늘리는 경우 포함, 줄이는 변경은 제외)
+function exceededBy(changes) {
+  const before = countGrades();
+  const after = countGrades(changes);
+  return gradeLimits()
+    .map((l) => ({ ...l, before: sumCodes(before, l.codes), after: sumCodes(after, l.codes) }))
+    .filter((l) => l.after > l.max && l.after > l.before);
+}
+
+// 경고창: 확인 시 true, 취소 시 false
+function confirmExceeded(items) {
+  const dlg = $("warn-dialog");
+  const n = state.sheet.members.length;
+  $("warn-list").innerHTML = items
+    .map((l) => `<li><b>${l.label} ${l.after}명</b> – 허용 ${l.max}명 (부서 ${n}명의 ${pct(l.ratio, 0)}) 을 ${l.after - l.max}명 초과</li>`)
+    .join("");
+  dlg.showModal();
+  return new Promise((resolve) => {
+    const done = (ok) => {
+      $("warn-ok").onclick = $("warn-cancel").onclick = dlg.oncancel = null;
+      dlg.close();
+      resolve(ok);
+    };
+    $("warn-ok").onclick = () => done(true);
+    $("warn-cancel").onclick = () => done(false);
+    dlg.oncancel = (e) => { e.preventDefault(); done(false); };   // ESC = 취소
+    $("warn-cancel").focus();
+  });
 }
 
 // ---------------------------------------------------------------------
@@ -25,9 +90,14 @@ function rowHtml(m) {
   const incentive = !sim ? '<span class="muted">-</span>'
     : grade && !grade.incentive_eligible ? '<span class="muted">미지급</span>'
     : won(m.next_incentive);
+  const checked = state.selected.has(m.employee_id) ? "checked" : "";
   return `
     <td>${esc(m.emp_no)}</td>
-    <td>${esc(m.name)}${m.department_name !== state.sheet.department.name ? ` <span class="muted">(${esc(m.department_name)})</span>` : ""}</td>
+    <td><label class="check-label">
+      <input type="checkbox" class="row-check" data-emp="${m.employee_id}" ${checked} ${m.editable ? "" : "disabled"}
+             aria-label="${esc(m.name)} 선택">
+      ${esc(m.name)}${m.department_name !== state.sheet.department.name ? ` <span class="muted">(${esc(m.department_name)})</span>` : ""}
+    </label></td>
     <td>${esc(m.job_level)}</td>
     <td class="num">${won(m.cur_base_salary)}</td>
     <td>${gradeSelect(m)}</td>
@@ -45,12 +115,63 @@ function renderRows() {
   for (const m of state.sheet.members) {
     const tr = document.createElement("tr");
     tr.dataset.emp = m.employee_id;
+    tr.classList.toggle("selected", state.selected.has(m.employee_id));
     tr.innerHTML = rowHtml(m);
     tbody.appendChild(tr);
   }
   if (!state.sheet.members.length) {
     tbody.innerHTML = '<tr><td colspan="11" class="muted">평가 대상자가 없습니다.</td></tr>';
   }
+}
+
+function renderDistribution() {
+  const counts = countGrades();
+  const n = state.sheet.members.length;
+  const rated = Object.values(counts).reduce((a, b) => a + b, 0);
+  const limits = gradeLimits();
+  const over = limits.filter((l) => sumCodes(counts, l.codes) > l.max);
+
+  const chip = (html, cls = "") => `<span class="dist-item ${cls}">${html}</span>`;
+  const chips = state.ctx.grades.map((g) => {
+    const c = counts[g.code];
+    const lim = limits.find((l) => l.type === `GRADE_${g.code}`);
+    const share = rated ? ` (${pct(c / rated)})` : "";
+    if (lim) {
+      const isOver = c > lim.max;
+      return chip(`<b>${g.code} ${c}명</b>${share} · 한도 ${lim.max}명(${pct(lim.ratio, 0)})${isOver ? " · ⚠ 초과" : ""}`,
+                  isOver ? "over" : "");
+    }
+    const guide = g.max_ratio != null ? ` · 가이드 ${quota(g.max_ratio, n)}명(${pct(g.max_ratio, 0)})` : "";
+    return chip(`${g.code} ${c}명${share}${guide}`);
+  });
+  const top = limits.find((l) => l.type === "TOP");
+  if (top) {
+    const c = sumCodes(counts, top.codes);
+    const isOver = c > top.max;
+    chips.splice(2, 0, '<span class="dist-sep"></span>' +
+      chip(`<b>${top.label} 합계 ${c}명</b>${rated ? ` (${pct(c / rated)})` : ""} · 한도 ${top.max}명(${pct(top.ratio, 0)})${isOver ? " · ⚠ 초과" : ""}`,
+           `top ${isOver ? "over" : ""}`) +
+      '<span class="dist-sep"></span>');
+  }
+  $("distribution").innerHTML =
+    `<span class="dist-title">등급별 인원 <span class="muted">(입력 ${rated}/${n}명)</span></span>` + chips.join("");
+
+  $("alert-banner").hidden = !over.length;
+  $("alert-banner").textContent = over.length
+    ? `⚠ 평가 기준율을 초과했습니다: ${over.map((l) => `${l.label} ${sumCodes(counts, l.codes)}명 > 허용 ${l.max}명`).join(" / ")}`
+    : "";
+}
+
+function renderBulkBar() {
+  const n = state.selected.size;
+  $("bulk-count").textContent = `선택 ${n}명`;
+  $("bulk-apply").disabled = n === 0;
+  $("bulk-clear").disabled = n === 0;
+  const editable = state.sheet.members.filter((m) => m.editable);
+  const all = $("check-all");
+  all.disabled = editable.length === 0;
+  all.checked = editable.length > 0 && editable.every((m) => state.selected.has(m.employee_id));
+  all.indeterminate = n > 0 && !all.checked;
 }
 
 function renderSummary() {
@@ -72,30 +193,13 @@ function renderSummary() {
   const curDone = sum(done, "cur_base_salary");
   $("t-rate").textContent = curDone ? pct(sum(done, "next_base_salary") / curDone - 1) : "-";
 
-  // 등급 분포 · 가이드 · 경고 (A 10% 초과, A·B 40% 초과 시 경고 / B 30% 는 안내만)
+  // 부서 상위평가율 → A·B 조정계수 (성과인상률 계산은 입력 인원 기준)
   const st = state.sheet.stats;
-  const alertTypes = new Set(st.alerts.map((a) => a.type));
-  const limit = state.ctx.cycle.top_grade_ratio_limit;
-  const chip = (label, guide, over) =>
-    `<span class="dist-item ${over ? "over" : ""}">${label}${guide}${over ? " · ⚠ 초과" : ""}</span>`;
-  const chips = state.ctx.grades.map((g) => {
-    const n = st.grade_counts[g.code];
-    const guide = g.max_ratio != null ? ` · 가이드 ≤${pct(g.max_ratio, 0)}` : "";
-    return chip(`${g.code} ${n}명 (${pct(st.grade_ratios[g.code])})`, guide, alertTypes.has(`GRADE_${g.code}`));
-  });
-  const topN = state.ctx.grades.filter((g) => g.is_top_grade).reduce((a, g) => a + st.grade_counts[g.code], 0);
-  chips.splice(2, 0, `<span class="dist-sep"></span>` +
-    chip(`<b>A·B 합계 ${topN}명 (${pct(st.top_rate)})</b>`, limit != null ? ` · 기준 ≤${pct(limit, 0)}` : "",
-         alertTypes.has("TOP")) + `<span class="dist-sep"></span>`);
-  $("distribution").innerHTML = chips.join("");
-
-  // 부서 상위평가율 → A·B 조정계수
   $("org-top").textContent = pct(st.top_rate);
   $("org-factor").textContent = `A·B 성과인상률 조정계수 ×${Number(st.org_factor).toFixed(2)}`;
-  $("alert-banner").hidden = !st.alerts.length;
-  $("alert-banner").textContent = st.alerts.length
-    ? `⚠ 등급 배분 기준 초과: ${st.alerts.map((a) => a.message).join(" / ")}` : "";
 
+  renderDistribution();
+  renderBulkBar();
   $("submit-btn").disabled = !state.sheet.can_submit;
 }
 
@@ -109,6 +213,8 @@ function renderHeader() {
 async function loadSheet() {
   setStatus("");
   state.sheet = await api(`/api/departments/${state.deptId}/sheet`);
+  const editable = new Set(state.sheet.members.filter((m) => m.editable).map((m) => m.employee_id));
+  state.selected = new Set([...state.selected].filter((id) => editable.has(id)));
   renderHeader();
   renderRows();
   renderSummary();
@@ -139,14 +245,80 @@ async function onGradeChange(e) {
   const sel = e.target;
   if (sel.tagName !== "SELECT" || !sel.dataset.emp) return;
   const empId = Number(sel.dataset.emp);
+  const member = state.sheet.members.find((m) => m.employee_id === empId);
+  const code = sel.value || null;
+
+  const exceeded = exceededBy(new Map([[empId, code]]));
+  if (exceeded.length && !(await confirmExceeded(exceeded))) {
+    sel.value = member.grade_code ?? "";                 // 취소 → 원래 등급으로 되돌림
+    setStatus("입력을 취소했습니다.");
+    return;
+  }
+
   setStatus("계산 중…");
   try {
     await api(`/api/departments/${state.deptId}/evaluations/${empId}`, {
       method: "PUT",
-      body: JSON.stringify({ grade_code: sel.value || null }),
+      body: JSON.stringify({ grade_code: code }),
     });
     await refreshSheet();
     setStatus("자동 저장됨 (임시저장)");
+  } catch (err) {
+    setStatus(err.message, true);
+    await loadSheet();
+  }
+}
+
+function onCheck(e) {
+  const box = e.target;
+  const empId = Number(box.dataset.emp);
+  if (box.checked) state.selected.add(empId);
+  else state.selected.delete(empId);
+  box.closest("tr").classList.toggle("selected", box.checked);
+  renderBulkBar();
+}
+
+function onCheckAll(e) {
+  const on = e.target.checked;
+  state.selected = new Set(on ? state.sheet.members.filter((m) => m.editable).map((m) => m.employee_id) : []);
+  document.querySelectorAll(".row-check:not(:disabled)").forEach((box) => {
+    box.checked = on;
+    box.closest("tr").classList.toggle("selected", on);
+  });
+  renderBulkBar();
+}
+
+function clearSelection() {
+  state.selected.clear();
+  document.querySelectorAll(".row-check").forEach((box) => {
+    box.checked = false;
+    box.closest("tr").classList.remove("selected");
+  });
+  renderBulkBar();
+}
+
+async function onBulkApply() {
+  const ids = [...state.selected];
+  const code = $("bulk-grade").value || null;
+  if (!ids.length) return;
+  const label = code ? `${code}등급` : "미입력(등급 삭제)";
+
+  const exceeded = exceededBy(new Map(ids.map((id) => [id, code])));
+  if (exceeded.length) {
+    if (!(await confirmExceeded(exceeded))) { setStatus("일괄 입력을 취소했습니다."); return; }
+  } else if (!confirm(`선택한 ${ids.length}명에게 ${label}을(를) 일괄 적용할까요?`)) {
+    return;
+  }
+
+  setStatus("일괄 저장 중…");
+  try {
+    const res = await api(`/api/departments/${state.deptId}/evaluations/bulk`, {
+      method: "POST",
+      body: JSON.stringify({ employee_ids: ids, grade_code: code }),
+    });
+    clearSelection();
+    await refreshSheet();
+    setStatus(`${res.updated}명 ${label} 일괄 저장됨 (임시저장)`);
   } catch (err) {
     setStatus(err.message, true);
     await loadSheet();
@@ -157,6 +329,7 @@ async function onSubmit() {
   if (!confirm("평가를 제출하면 더 이상 수정할 수 없습니다. 제출할까요?")) return;
   try {
     const res = await api(`/api/departments/${state.deptId}/submit`, { method: "POST" });
+    state.selected.clear();
     await loadSheet();
     setStatus(`${res.submitted}명 제출 완료`);
   } catch (err) {
@@ -174,6 +347,9 @@ async function init() {
   $("base-up").textContent = policy ? pct(policy.base_up_rate) : "-";
   $("incentive-grades").textContent =
     state.ctx.grades.filter((g) => g.incentive_eligible).map((g) => g.code).join("·") || "없음";
+  $("bulk-grade").innerHTML = state.ctx.grades
+    .map((g) => `<option value="${g.code}">${g.code} (${esc(g.name)})</option>`).join("") +
+    '<option value="">미입력 (등급 삭제)</option>';
 
   const select = $("dept-select");
   // 본인이 부서장인 부서만 내려오므로 상위 부서가 목록에 없을 수 있다
@@ -182,18 +358,25 @@ async function init() {
     return parent ? 1 + depth(parent) : 0;
   };
   select.innerHTML = departments
-    .map((d) => `<option value="${d.id}">${"  ".repeat(depth(d))}${esc(d.name)}</option>`)
+    .map((d) => `<option value="${d.id}">${"  ".repeat(depth(d))}${esc(d.name)}</option>`)
     .join("");
   const saved = Number(new URLSearchParams(location.search).get("dept"));
   state.deptId = departments.some((d) => d.id === saved) ? saved : departments[0]?.id;
   select.value = state.deptId;
   select.addEventListener("change", () => {
     state.deptId = Number(select.value);
+    state.selected.clear();
     history.replaceState(null, "", `?dept=${state.deptId}`);
     loadSheet().catch((err) => setStatus(err.message, true));
   });
 
-  $("rows").addEventListener("change", onGradeChange);
+  $("rows").addEventListener("change", (e) => {
+    if (e.target.classList.contains("row-check")) onCheck(e);
+    else onGradeChange(e);
+  });
+  $("check-all").addEventListener("change", onCheckAll);
+  $("bulk-apply").addEventListener("click", onBulkApply);
+  $("bulk-clear").addEventListener("click", clearSelection);
   bindFormulaDialog(() => state.deptId);
   $("submit-btn").addEventListener("click", onSubmit);
   if (state.deptId) await loadSheet();

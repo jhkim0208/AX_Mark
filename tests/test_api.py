@@ -473,3 +473,40 @@ def test_formula_shows_e_fixed_rates(client):
     assert e["fixed_by_level"] == {"CL2": 0.0, "CL3": -0.1, "CL4": -0.1}
     cl4 = next(r for r in f["matrix"] if r["level"] == "CL4")["rates"]
     assert cl4["E"]["total"] == pytest.approx(-0.10)
+
+
+# ---------------------------------------------------------------------
+# 일괄 입력 (체크박스)
+# ---------------------------------------------------------------------
+def bulk(client, dept, ids, code):
+    return client.post(f"/api/departments/{dept}/evaluations/bulk",
+                       json={"employee_ids": ids, "grade_code": code})
+
+
+def test_bulk_assigns_same_grade(head):
+    ids = [m["employee_id"] for m in head.get("/api/departments/2/sheet").json()["members"][:5]]
+    res = bulk(head, 2, ids, "C")
+    assert res.status_code == 200 and res.json() == {"updated": 5}
+    members = {m["employee_id"]: m for m in head.get("/api/departments/2/sheet").json()["members"]}
+    assert all(members[i]["grade_code"] == "C" and members[i]["perf_raise_rate"] is not None for i in ids)
+
+    assert bulk(head, 2, ids[:2], None).json() == {"updated": 2}     # 일괄 삭제
+    members = {m["employee_id"]: m for m in head.get("/api/departments/2/sheet").json()["members"]}
+    assert members[ids[0]]["grade_code"] is None and members[ids[2]]["grade_code"] == "C"
+
+
+def test_bulk_is_all_or_nothing(head):
+    res = bulk(head, 2, [3, 4, 9], "A")                              # 9 = 타 본부장 (대상 아님)
+    assert res.status_code == 403
+    assert db_rows("SELECT count(*) FROM evaluation WHERE employee_id IN (3, 4)")[0][0] == 0
+
+    assert bulk(head, 2, [], "A").status_code == 422
+    assert bulk(head, 2, [3], "Z").status_code == 422
+    assert bulk(head, 3, [7], "A").status_code == 403                # 다른 부서
+
+
+def test_bulk_rejects_submitted(head):
+    members = head.get("/api/departments/2/sheet").json()["members"]
+    bulk(head, 2, [m["employee_id"] for m in members], "C")
+    head.post("/api/departments/2/submit")
+    assert bulk(head, 2, [3], "B").status_code == 409

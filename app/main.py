@@ -233,6 +233,45 @@ class GradeInput(BaseModel):
     grade_code: str | None = None
 
 
+def _save_grades(cur, cycle, dept_id: int, user: User, employee_ids: list[int],
+                 grade_code: str | None) -> None:
+    """여러 대상자에게 같은 등급을 임시저장(DRAFT). 하나라도 불가하면 전체 취소(트랜잭션)."""
+    if cycle["status"] != "OPEN":
+        raise HTTPException(409, "평가 입력 기간이 아닙니다.")
+    _department(cur, dept_id)
+
+    cur.execute(f"SELECT id FROM ({TARGETS_SQL}) t WHERE id = ANY(%(emps)s)",
+                {"dept": dept_id, "emps": employee_ids})
+    if len({r["id"] for r in cur.fetchall()}) != len(set(employee_ids)):
+        raise HTTPException(403, "이 부서의 평가 대상자가 아닌 직원이 포함되어 있습니다.")
+
+    grade_id = None
+    if grade_code:
+        cur.execute("SELECT id FROM evaluation_grade WHERE cycle_id = %s AND code = %s",
+                    (cycle["id"], grade_code))
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(422, "존재하지 않는 평가등급입니다.")
+        grade_id = row["id"]
+
+    cur.execute(
+        """SELECT 1 FROM evaluation
+            WHERE cycle_id = %s AND employee_id = ANY(%s) AND status <> 'DRAFT'
+              FOR UPDATE""",
+        (cycle["id"], employee_ids),
+    )
+    if cur.fetchone():
+        raise HTTPException(409, "이미 제출된 평가는 수정할 수 없습니다.")
+
+    cur.executemany(
+        """INSERT INTO evaluation (cycle_id, employee_id, evaluator_id, grade_id)
+           VALUES (%s, %s, %s, %s)
+           ON CONFLICT (cycle_id, employee_id)
+           DO UPDATE SET grade_id = EXCLUDED.grade_id, evaluator_id = EXCLUDED.evaluator_id""",
+        [(cycle["id"], emp, user.employee_id, grade_id) for emp in sorted(set(employee_ids))],
+    )
+
+
 @app.put("/api/departments/{dept_id}/evaluations/{employee_id}")
 def save_grade(dept_id: int, employee_id: int, body: GradeInput,
                cycle_id: int | None = None, user: User = Depends(current_user)):
@@ -241,44 +280,29 @@ def save_grade(dept_id: int, employee_id: int, body: GradeInput,
     with get_pool().connection() as conn, conn.cursor() as cur:
         _set_actor(cur, user)
         cycle = _cycle(cur, cycle_id)
-        if cycle["status"] != "OPEN":
-            raise HTTPException(409, "평가 입력 기간이 아닙니다.")
-        _department(cur, dept_id)
-
-        cur.execute(f"SELECT 1 FROM ({TARGETS_SQL}) t WHERE id = %(emp)s",
-                    {"dept": dept_id, "emp": employee_id})
-        if cur.fetchone() is None:
-            raise HTTPException(403, "이 부서의 평가 대상자가 아닙니다.")
-
-        grade_id = None
-        if body.grade_code:
-            cur.execute(
-                "SELECT id FROM evaluation_grade WHERE cycle_id = %s AND code = %s",
-                (cycle["id"], body.grade_code),
-            )
-            row = cur.fetchone()
-            if row is None:
-                raise HTTPException(422, "존재하지 않는 평가등급입니다.")
-            grade_id = row["id"]
-
-        cur.execute(
-            "SELECT status FROM evaluation WHERE cycle_id = %s AND employee_id = %s FOR UPDATE",
-            (cycle["id"], employee_id),
-        )
-        existing = cur.fetchone()
-        if existing and existing["status"] != "DRAFT":
-            raise HTTPException(409, "이미 제출된 평가는 수정할 수 없습니다.")
-
-        cur.execute(
-            """INSERT INTO evaluation (cycle_id, employee_id, evaluator_id, grade_id)
-               VALUES (%s, %s, %s, %s)
-               ON CONFLICT (cycle_id, employee_id)
-               DO UPDATE SET grade_id = EXCLUDED.grade_id, evaluator_id = EXCLUDED.evaluator_id""",
-            (cycle["id"], employee_id, user.employee_id, grade_id),
-        )
+        _save_grades(cur, cycle, dept_id, user, [employee_id], body.grade_code)
         member = _members(cur, cycle, dept_id, employee_id)[0]
     member["editable"] = _editable(cycle, member, user, dept_id)
     return member
+
+
+class BulkGradeInput(BaseModel):
+    employee_ids: list[int]
+    grade_code: str | None = None
+
+
+@app.post("/api/departments/{dept_id}/evaluations/bulk")
+def save_grades_bulk(dept_id: int, body: BulkGradeInput,
+                     cycle_id: int | None = None, user: User = Depends(current_user)):
+    """체크한 여러 부서원에게 같은 등급을 한 번에 임시저장."""
+    _require_edit(user, dept_id)
+    if not body.employee_ids:
+        raise HTTPException(422, "선택된 부서원이 없습니다.")
+    with get_pool().connection() as conn, conn.cursor() as cur:
+        _set_actor(cur, user)
+        cycle = _cycle(cur, cycle_id)
+        _save_grades(cur, cycle, dept_id, user, body.employee_ids, body.grade_code)
+    return {"updated": len(set(body.employee_ids))}
 
 
 @app.post("/api/departments/{dept_id}/submit")
