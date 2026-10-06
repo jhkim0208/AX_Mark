@@ -143,6 +143,15 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
 
 운영 시 반드시 HTTPS 리버스 프록시 뒤에서 실행하고 `SESSION_SECRET` 을 설정하세요.
 
+### 화면이 예전 모습으로 보일 때 (점검 순서)
+
+1. **최신 코드인지 확인** – `git pull` 후 `git log -1 --oneline` 이 GitHub 브랜치의 최신 커밋과 같은지 확인
+2. **서버 재시작** – `uvicorn` 을 껐다 켭니다 (`--reload` 없이 실행했다면 코드 변경이 반영되지 않음)
+3. **DB 스키마 반영** – `db/schema.sql` 이 바뀐 커밋이면 DB를 다시 만들고 `schema.sql` → `seed_sample.sql` 순서로 적재
+4. **브라우저 캐시** – `Ctrl + F5`(강력 새로고침). 서버가 `Cache-Control: no-cache` 를 보내므로 이후에는 자동으로 최신 파일을 받습니다
+5. **브라우저 버전** – 최신 Chrome / Edge 사용 (Internet Explorer 미지원). F12 → Console 탭에 빨간 오류가 있으면 그 내용을 확인
+6. **접속 주소** – VS Code의 Live Server 등으로 HTML 파일을 직접 열지 말고, 반드시 `uvicorn` 서버 주소(`http://localhost:8000`)로 접속
+
 ## 테스트
 
 ```bash

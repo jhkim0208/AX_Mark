@@ -33,6 +33,16 @@ app.add_middleware(
 app.include_router(auth.router)
 
 
+@app.middleware("http")
+async def no_stale_assets(request: Request, call_next):
+    """화면(HTML·CSS·JS)은 브라우저가 매번 서버에 변경 여부를 확인하게 한다.
+    코드를 업데이트한 뒤 브라우저 캐시 때문에 예전 화면이 보이는 문제를 막는다 (변경 없으면 304로 빠르게 응답)."""
+    response = await call_next(request)
+    if request.url.path.startswith("/static/") or response.headers.get("content-type", "").startswith("text/html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 # ---------------------------------------------------------------------
 # 공통 조회
 # ---------------------------------------------------------------------
