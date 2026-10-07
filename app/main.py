@@ -343,21 +343,34 @@ def save_changes(dept_id: int, body: ChangesInput,
     return {"saved": saved}
 
 
+class ResetInput(BaseModel):
+    employee_ids: list[int] | None = None       # 비우면 부서 전체
+
+
 @app.post("/api/departments/{dept_id}/reset")
-def reset_saved(dept_id: int, cycle_id: int | None = None, user: User = Depends(current_user)):
-    """임시저장한 등급을 모두 지워 처음부터 다시 입력할 수 있게 한다. 제출된 평가는 대상이 아니다.
+def reset_saved(dept_id: int, body: ResetInput | None = None,
+                cycle_id: int | None = None, user: User = Depends(current_user)):
+    """임시저장한 등급을 지워 다시 입력할 수 있게 한다.
+       employee_ids 를 주면 선택한 부서원만, 없으면 부서 전체. 제출된 평가는 대상이 아니다.
        (행은 남기고 등급만 비운다 – 변경 이력은 그대로 보존)"""
     _require_edit(user, dept_id)
+    ids = body.employee_ids if body and body.employee_ids else None
     with get_pool().connection() as conn, conn.cursor() as cur:
         _set_actor(cur, user)
         cycle = _cycle(cur, cycle_id)
         if cycle["status"] != "OPEN":
             raise HTTPException(409, "평가 입력 기간이 아닙니다.")
+        if ids is not None:
+            cur.execute(f"SELECT id FROM ({TARGETS_SQL}) t WHERE id = ANY(%(emps)s)",
+                        {"dept": dept_id, "emps": ids})
+            if len({r["id"] for r in cur.fetchall()}) != len(set(ids)):
+                raise HTTPException(403, "이 부서의 평가 대상자가 아닌 직원이 포함되어 있습니다.")
         cur.execute(
             f"""UPDATE evaluation SET grade_id = NULL
                  WHERE cycle_id = %(cycle)s AND status = 'DRAFT' AND grade_id IS NOT NULL
-                   AND employee_id IN ({TARGETS_SQL})""",
-            {"cycle": cycle["id"], "dept": dept_id},
+                   AND employee_id IN ({TARGETS_SQL})
+                   AND (%(emps)s::int[] IS NULL OR employee_id = ANY(%(emps)s::int[]))""",
+            {"cycle": cycle["id"], "dept": dept_id, "emps": ids},
         )
         return {"reset": cur.rowcount}
 

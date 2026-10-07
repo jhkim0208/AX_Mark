@@ -12,9 +12,11 @@ const state = {
 };
 
 const isDirty = () => state.changes.size > 0;
-// 임시저장되어 있고 아직 수정 가능한(제출 전) 평가 수
-const savedCount = () => state.sheet.members
-  .filter((m) => m.editable && state.saved.get(m.employee_id)).length;
+// 임시저장되어 있고 아직 수정 가능한(제출 전) 부서원. 체크박스로 선택한 사람이 있으면 그 중에서만
+const savedTargets = (onlySelected) => state.sheet.members
+  .filter((m) => m.editable && state.saved.get(m.employee_id))
+  .filter((m) => !onlySelected || state.selected.has(m.employee_id))
+  .map((m) => m.employee_id);
 
 function setStatus(msg, isError = false) {
   const el = $("status-msg");
@@ -209,6 +211,19 @@ function renderBulkBar() {
   all.disabled = editable.length === 0;
   all.checked = editable.length > 0 && editable.every((m) => state.selected.has(m.employee_id));
   all.indeterminate = n > 0 && !all.checked;
+  renderResetBtn();
+}
+
+// 선택한 사람이 있으면 '선택 n명 저장값 초기화', 없으면 '전체 저장값 초기화'
+function renderResetBtn() {
+  const bySelection = state.selected.size > 0;
+  const n = savedTargets(bySelection).length;
+  const btn = $("reset-btn");
+  btn.textContent = bySelection ? `선택 ${n}명 저장값 초기화` : "전체 저장값 초기화";
+  btn.title = bySelection
+    ? "체크한 부서원 중 임시저장된 등급을 지웁니다"
+    : "임시저장한 등급을 모두 지웁니다 (일부만 지우려면 이름 옆 체크박스로 선택)";
+  btn.disabled = n === 0;
 }
 
 function renderSaveBar() {
@@ -218,7 +233,7 @@ function renderSaveBar() {
   $("save-btn").disabled = n === 0;
   $("save-btn").classList.toggle("attention", n > 0);
   $("discard-btn").disabled = n === 0;
-  $("reset-btn").disabled = savedCount() === 0;
+  renderResetBtn();
   const editable = state.sheet.members.some((m) => m.editable);
   $("submit-btn").disabled = !editable || !state.sheet.members.every((m) => m.grade_code);
 }
@@ -408,17 +423,33 @@ async function onSave() {
   }
 }
 
-// 임시저장한 등급을 모두 지우고 처음부터 다시 입력
+// 임시저장한 등급 지우기 – 체크박스로 선택한 부서원만, 선택이 없으면 부서 전체
 async function onReset() {
-  const n = savedCount();
-  if (!n) return;
-  const extra = isDirty() ? `\n(저장하지 않은 변경 ${state.changes.size}건도 함께 사라집니다.)` : "";
-  if (!confirm(`임시저장한 평가 ${n}건을 모두 지우고 처음부터 다시 입력할까요?${extra}`)) return;
+  const bySelection = state.selected.size > 0;
+  const ids = savedTargets(bySelection);
+  if (!ids.length) return;
+  const idSet = new Set(ids);
+  const lost = [...state.changes.keys()].filter((id) => !bySelection || idSet.has(id)).length;
+  const extra = lost ? `\n(해당 인원의 저장하지 않은 변경 ${lost}건도 함께 사라집니다.)` : "";
+  const msg = bySelection
+    ? `선택한 ${ids.length}명의 임시저장 등급을 지우고 다시 입력할까요?${extra}`
+    : `임시저장한 평가 ${ids.length}건을 모두 지우고 처음부터 다시 입력할까요?${extra}`;
+  if (!confirm(msg)) return;
+
+  // 선택 초기화일 때는 다른 사람의 저장하지 않은 변경은 유지한다
+  const keep = bySelection ? [...state.changes].filter(([id]) => !idSet.has(id)) : [];
   setStatus("초기화 중…");
   try {
-    const res = await api(`/api/departments/${state.deptId}/reset`, { method: "POST" });
+    const res = await api(`/api/departments/${state.deptId}/reset`, {
+      method: "POST",
+      body: JSON.stringify(bySelection ? { employee_ids: ids } : {}),
+    });
     state.selected.clear();
     await loadSheet();
+    if (keep.length) {
+      stage(new Map(keep));
+      await refreshPreview();
+    }
     setStatus(`저장값 ${res.reset}건을 초기화했습니다. 등급을 다시 입력하세요.`);
   } catch (err) {
     setStatus(err.message, true);

@@ -597,3 +597,15 @@ def test_hr_total_row_and_all_popup(client):
 
     login(client, "E002")                                            # 부서장은 조회 불가
     assert client.get("/api/hr/all").status_code == 403
+
+
+def test_reset_only_selected_members(head):
+    head.post("/api/departments/2/save", json=changes((3, "A"), (4, "B"), (5, "C")))
+    res = head.post("/api/departments/2/reset", json={"employee_ids": [3, 5]})
+    assert res.json() == {"reset": 2}
+    members = {m["employee_id"]: m["grade_code"] for m in head.get("/api/departments/2/sheet").json()["members"]}
+    assert (members[3], members[4], members[5]) == (None, "B", None)        # 박지호(4)는 유지
+
+    assert head.post("/api/departments/2/reset", json={"employee_ids": [4, 9]}).status_code == 403
+    assert {m["employee_id"]: m["grade_code"]
+            for m in head.get("/api/departments/2/sheet").json()["members"]}[4] == "B"  # 전체 취소
