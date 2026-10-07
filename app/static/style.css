@@ -250,6 +250,8 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .hr-table tbody tr.clickable { cursor: pointer; }
 .hr-table tbody tr.clickable:hover, .hr-table tbody tr.clickable:focus-visible { background: var(--accent-soft); outline: none; }
 .hr-table tr.parent .dept-name { font-weight: 600; }
+.hr-table tr.total-row td { background: var(--bg); font-weight: 700; border-bottom: 2px solid var(--border); }
+.hr-table tr.total-row .dept-name { font-size: 15px; }
 .hr-table tr.child td:first-child { padding-left: 28px; }
 .dist-col { min-width: 220px; }
 .top-col { min-width: 200px; }

@@ -546,3 +546,54 @@ def test_preview_and_save_validate_targets(head):
     assert head.post("/api/departments/2/preview", json=changes((9, "A"))).status_code == 403
     assert head.post("/api/departments/2/save", json=changes((3, "A"), (9, "A"))).status_code == 403
     assert db_rows("SELECT count(*) FROM evaluation WHERE employee_id = 3")[0][0] == 0
+
+
+# ---------------------------------------------------------------------
+# 저장값 초기화
+# ---------------------------------------------------------------------
+def test_reset_clears_saved_grades(head):
+    head.post("/api/departments/2/save", json=changes((3, "A"), (4, "B"), (5, "C")))
+    res = head.post("/api/departments/2/reset")
+    assert res.status_code == 200 and res.json() == {"reset": 3}
+    members = head.get("/api/departments/2/sheet").json()["members"]
+    assert all(m["grade_code"] is None and m["editable"] for m in members)
+    # 다시 입력 가능
+    assert head.post("/api/departments/2/save", json=changes((3, "C"))).json() == {"saved": 1}
+    # 이력은 보존 (A → 초기화 → C)
+    rows = db_rows("""SELECT g.code FROM evaluation_history h JOIN evaluation ev ON ev.id = h.evaluation_id
+                       LEFT JOIN evaluation_grade g ON g.id = h.new_grade_id
+                      WHERE ev.employee_id = 3 ORDER BY h.id""")
+    assert [r[0] for r in rows] == ["A", None, "C"]
+
+
+def test_reset_does_not_touch_submitted_or_other_departments(head):
+    members = head.get("/api/departments/2/sheet").json()["members"]
+    head.post("/api/departments/2/save", json=changes(*[(m["employee_id"], "C") for m in members]))
+    head.post("/api/departments/2/submit")
+    assert head.post("/api/departments/2/reset").json() == {"reset": 0}
+    assert head.post("/api/departments/3/reset").status_code == 403   # 다른 부서
+    login(head, "E010")                                              # Cloud Lab 임시저장분은 그대로
+    before = db_rows("SELECT count(*) FROM evaluation e JOIN employee m ON m.id = e.employee_id "
+                     "WHERE m.department_id = 5 AND e.grade_id IS NOT NULL")[0][0]
+    assert before > 0
+
+
+# ---------------------------------------------------------------------
+# 인사팀 – 연구소 전체 합계
+# ---------------------------------------------------------------------
+def test_hr_total_row_and_all_popup(client):
+    login(client, "E007")
+    overview = client.get("/api/hr/overview").json()
+    assert overview["total_label"] == "연구소 전체"
+    total = overview["total"]
+    assert total["headcount"] == sum(d["headcount"] for d in overview["departments"])
+    assert total["rated"] == sum(d["rated"] for d in overview["departments"])
+
+    res = client.get("/api/hr/all").json()
+    assert res["department"]["name"] == "연구소 전체"
+    assert len(res["members"]) == total["headcount"] == res["stats"]["headcount"]
+    assert len({m["employee_id"] for m in res["members"]}) == len(res["members"])   # 중복 없음
+    assert res["stats"]["top_rate"] == pytest.approx(total["top_rate"])
+
+    login(client, "E002")                                            # 부서장은 조회 불가
+    assert client.get("/api/hr/all").status_code == 403

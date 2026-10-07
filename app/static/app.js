@@ -12,6 +12,9 @@ const state = {
 };
 
 const isDirty = () => state.changes.size > 0;
+// 임시저장되어 있고 아직 수정 가능한(제출 전) 평가 수
+const savedCount = () => state.sheet.members
+  .filter((m) => m.editable && state.saved.get(m.employee_id)).length;
 
 function setStatus(msg, isError = false) {
   const el = $("status-msg");
@@ -215,6 +218,7 @@ function renderSaveBar() {
   $("save-btn").disabled = n === 0;
   $("save-btn").classList.toggle("attention", n > 0);
   $("discard-btn").disabled = n === 0;
+  $("reset-btn").disabled = savedCount() === 0;
   const editable = state.sheet.members.some((m) => m.editable);
   $("submit-btn").disabled = !editable || !state.sheet.members.every((m) => m.grade_code);
 }
@@ -398,7 +402,24 @@ async function onSave() {
   try {
     const n = await saveChanges();
     const time = new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
-    setStatus(`임시저장 완료 (${n}건, ${time})`);
+    setStatus(`임시저장 완료 (${n}건, ${time}) – 등급을 바꾼 뒤 다시 임시저장할 수 있습니다.`);
+  } catch (err) {
+    setStatus(err.message, true);
+  }
+}
+
+// 임시저장한 등급을 모두 지우고 처음부터 다시 입력
+async function onReset() {
+  const n = savedCount();
+  if (!n) return;
+  const extra = isDirty() ? `\n(저장하지 않은 변경 ${state.changes.size}건도 함께 사라집니다.)` : "";
+  if (!confirm(`임시저장한 평가 ${n}건을 모두 지우고 처음부터 다시 입력할까요?${extra}`)) return;
+  setStatus("초기화 중…");
+  try {
+    const res = await api(`/api/departments/${state.deptId}/reset`, { method: "POST" });
+    state.selected.clear();
+    await loadSheet();
+    setStatus(`저장값 ${res.reset}건을 초기화했습니다. 등급을 다시 입력하세요.`);
   } catch (err) {
     setStatus(err.message, true);
   }
@@ -482,6 +503,7 @@ async function init() {
   $("bulk-clear").addEventListener("click", clearSelection);
   $("save-btn").addEventListener("click", onSave);
   $("discard-btn").addEventListener("click", onDiscard);
+  $("reset-btn").addEventListener("click", onReset);
   $("submit-btn").addEventListener("click", onSubmit);
   bindFormulaDialog(() => state.deptId);
 

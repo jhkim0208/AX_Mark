@@ -80,28 +80,36 @@ function renderLegend() {
     .join("");
 }
 
-function renderDepartments() {
-  $("dept-rows").innerHTML = hr.data.departments
-    .map((d) => `
-      <tr class="clickable ${d.parent_id ? "child" : "parent"}" data-dept="${d.id}" tabindex="0"
-          aria-label="${esc(d.name)} 부서원 현황 열기">
-        <td><span class="dept-name">${esc(d.name)}</span>${d.parent_id ? "" : ' <span class="role-tag">본부</span>'}</td>
+function deptRowHtml(d, { total = false } = {}) {
+  const cls = total ? "total-row" : d.parent_id ? "child" : "parent";
+  const name = total
+    ? `<span class="dept-name">${esc(d.name)}</span> <span class="role-tag">전체</span>`
+    : `<span class="dept-name">${esc(d.name)}</span>${d.parent_id ? "" : ' <span class="role-tag">본부</span>'}`;
+  return `
+      <tr class="clickable ${cls}" data-dept="${d.id}" tabindex="0" aria-label="${esc(d.name)} 부서원 현황 열기">
+        <td>${name}</td>
         <td>${esc(d.head_name || "-")}</td>
         <td class="num">${d.headcount}</td>
         <td>
           <div class="progress" data-tip="${d.rated}/${d.headcount}명 입력 · ${d.submitted}명 제출">
-            <div class="progress-track"><div class="progress-fill" style="width:${(d.rated / d.headcount) * 100}%"></div></div>
+            <div class="progress-track"><div class="progress-fill" style="width:${d.headcount ? (d.rated / d.headcount) * 100 : 0}%"></div></div>
             <span>${d.rated}/${d.headcount}</span>
           </div>
         </td>
         <td>${distBar(d.grade_counts)}</td>
         <td class="num">${aRateCell(d)}</td>
         <td>${topRateCell(d.top_rate, hasAlert(d, "TOP"))}</td>
-        <td class="num">${d.rated ? `×${Number(d.org_factor).toFixed(2)}` : '<span class="muted">-</span>'}</td>
+        <td class="num">${d.rated && d.org_factor != null ? `×${Number(d.org_factor).toFixed(2)}` : '<span class="muted">-</span>'}</td>
         <td class="num">${signedPct(d.avg_perf_raise_rate)}</td>
         <td>${statusChip(d.status)}</td>
-      </tr>`)
-    .join("");
+      </tr>`;
+}
+
+function renderDepartments() {
+  // 맨 위: 모든 조직 합계 ('연구소 전체'), 그 아래 본부 → 팀/Lab
+  const total = { ...hr.data.total, id: "all", name: hr.data.total_label, head_name: "-", org_factor: null };
+  $("dept-rows").innerHTML = deptRowHtml(total, { total: true }) +
+    hr.data.departments.map((d) => deptRowHtml(d)).join("");
 }
 
 // ---------------------------------------------------------------------
@@ -116,16 +124,17 @@ async function openDepartment(deptId) {
   $("dlg-rows").innerHTML = "";
   if (!dlg.open) dlg.showModal();
   try {
-    const { department, stats, members } = await api(`/api/hr/departments/${deptId}`);
+    const isAll = deptId === "all";
+    const { department, stats, members } = await api(isAll ? "/api/hr/all" : `/api/hr/departments/${deptId}`);
     $("dlg-title").textContent = department.name;
-    $("dlg-sub").textContent = `부서장 ${department.head_name || "-"}`;
+    $("dlg-sub").textContent = isAll ? `전 조직 평가 대상자 ${stats.headcount}명` : `부서장 ${department.head_name || "-"}`;
     const stat = (label, value) => `<div class="stat"><span>${label}</span><strong>${value}</strong></div>`;
     $("dlg-stats").innerHTML = [
       stat("인원", `${stats.headcount}명`),
       stat("입력 / 제출", `${stats.rated} / ${stats.submitted}명`),
       stat("A 비율", pct(stats.grade_ratios.A) + alertBadge(hasAlert(stats, "GRADE_A"), "A 비율 가이드 초과")),
       stat("상위평가율 (A·B)", pct(stats.top_rate) + alertBadge(hasAlert(stats, "TOP"), "상위평가율 기준 초과")),
-      stat("A·B 조정계수", stats.rated ? `×${Number(stats.org_factor).toFixed(2)}` : "-"),
+      stat("A·B 조정계수", stats.rated && stats.org_factor != null ? `×${Number(stats.org_factor).toFixed(2)}` : "-"),
       stat("평균 성과인상률", signedPct(stats.avg_perf_raise_rate)),
       stat("평균 총인상률", stats.avg_raise_rate == null ? "-" : pct(stats.avg_raise_rate)),
       stat("상태", statusChip(stats.status)),
@@ -190,13 +199,13 @@ async function init() {
   const rows = $("dept-rows");
   rows.addEventListener("click", (e) => {
     const tr = e.target.closest("tr[data-dept]");
-    if (tr) openDepartment(Number(tr.dataset.dept));
+    if (tr) openDepartment(tr.dataset.dept === "all" ? "all" : Number(tr.dataset.dept));
   });
   rows.addEventListener("keydown", (e) => {
     const tr = e.target.closest("tr[data-dept]");
     if (tr && (e.key === "Enter" || e.key === " ")) {
       e.preventDefault();
-      openDepartment(Number(tr.dataset.dept));
+      openDepartment(tr.dataset.dept === "all" ? "all" : Number(tr.dataset.dept));
     }
   });
   const dlg = $("dept-dialog");

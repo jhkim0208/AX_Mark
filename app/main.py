@@ -343,6 +343,25 @@ def save_changes(dept_id: int, body: ChangesInput,
     return {"saved": saved}
 
 
+@app.post("/api/departments/{dept_id}/reset")
+def reset_saved(dept_id: int, cycle_id: int | None = None, user: User = Depends(current_user)):
+    """임시저장한 등급을 모두 지워 처음부터 다시 입력할 수 있게 한다. 제출된 평가는 대상이 아니다.
+       (행은 남기고 등급만 비운다 – 변경 이력은 그대로 보존)"""
+    _require_edit(user, dept_id)
+    with get_pool().connection() as conn, conn.cursor() as cur:
+        _set_actor(cur, user)
+        cycle = _cycle(cur, cycle_id)
+        if cycle["status"] != "OPEN":
+            raise HTTPException(409, "평가 입력 기간이 아닙니다.")
+        cur.execute(
+            f"""UPDATE evaluation SET grade_id = NULL
+                 WHERE cycle_id = %(cycle)s AND status = 'DRAFT' AND grade_id IS NOT NULL
+                   AND employee_id IN ({TARGETS_SQL})""",
+            {"cycle": cycle["id"], "dept": dept_id},
+        )
+        return {"reset": cur.rowcount}
+
+
 class BulkGradeInput(BaseModel):
     employee_ids: list[int]
     grade_code: str | None = None
@@ -474,9 +493,35 @@ def hr_overview(cycle_id: int | None = None, user: User = Depends(hr_user)):
         "policy": policy,
         "top_rate_limit": cycle["top_grade_ratio_limit"],      # 초과 시 경고
         "total": _stats(all_members, grades, cycle),
+        "total_label": ORG_TOTAL_NAME,
         "departments": [d for d in departments if d["headcount"] > 0],
         "user": user.to_dict(),
     }
+
+
+ORG_TOTAL_NAME = "연구소 전체"
+
+
+def _all_targets(cur, cycle) -> list[dict]:
+    """전 조직 평가 대상자 (각 직원은 하나의 평가 단위에만 속한다)"""
+    cur.execute("SELECT id FROM department ORDER BY COALESCE(parent_id, id), parent_id NULLS FIRST, code")
+    members = []
+    for d in cur.fetchall():
+        members += _members(cur, cycle, d["id"])
+    return members
+
+
+@app.get("/api/hr/all")
+def hr_all(cycle_id: int | None = None, user: User = Depends(hr_user)):
+    """'연구소 전체' 팝업: 모든 조직의 부서원 현황"""
+    with get_pool().connection() as conn, conn.cursor() as cur:
+        cycle = _cycle(cur, cycle_id)
+        grades = _grades(cur, cycle["id"])
+        members = _all_targets(cur, cycle)
+    stats = _stats(members, grades, cycle)
+    stats["org_factor"] = None                          # 조정계수는 부서 단위로만 적용
+    return {"department": {"id": None, "name": ORG_TOTAL_NAME, "head_name": None},
+            "stats": stats, "members": members}
 
 
 @app.get("/api/hr/departments/{dept_id}")
