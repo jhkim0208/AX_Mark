@@ -3,6 +3,7 @@ REM ==================================================================
 REM  Allow other PCs on the company network to reach AX Mark (TCP 8000)
 REM  Right-click this file -> "Run as administrator"
 REM  Only domain/private networks are opened (not public Wi-Fi).
+REM  (start.bat does this automatically; use this file only if that fails)
 REM  To remove later:
 REM    netsh advfirewall firewall delete rule name="AX Mark (TCP 8000)"
 REM ==================================================================
