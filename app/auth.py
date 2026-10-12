@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -33,15 +34,29 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         env = os.environ.get
-        secret = env("SESSION_SECRET")
-        if not secret:
-            # 미설정 시 프로세스마다 임의 키 → 재시작하면 모두 로그아웃된다 (운영에서는 반드시 설정)
-            secret = secrets.token_urlsafe(48)
+        secret = env("SESSION_SECRET") or _secret_from_file()
         return cls(
             session_secret=secret,
             session_max_age=int(env("SESSION_MAX_AGE", 8 * 3600)),
             https_only=env("SESSION_HTTPS_ONLY", "true") == "true",
         )
+
+
+def _secret_from_file() -> str:
+    """SESSION_SECRET 미설정 시 프로젝트 루트의 .session_secret 파일에 한 번 만들어 재사용한다.
+    (서버를 재시작해도 로그인이 유지되도록. 파일은 git 에 올리지 않는다)"""
+    from . import ROOT
+
+    path = Path(os.environ.get("SESSION_SECRET_FILE", ROOT / ".session_secret"))
+    try:
+        if path.is_file() and path.read_text().strip():
+            return path.read_text().strip()
+        secret = secrets.token_urlsafe(48)
+        path.write_text(secret)
+        path.chmod(0o600)
+        return secret
+    except OSError:
+        return secrets.token_urlsafe(48)                  # 파일을 쓸 수 없으면 프로세스마다 임의 키
 
 
 settings = Settings.from_env()
