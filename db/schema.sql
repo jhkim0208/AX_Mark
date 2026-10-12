@@ -22,7 +22,7 @@ CREATE TABLE job_level (                       -- 직급
 CREATE TABLE department (                      -- 부서
     id                SERIAL PRIMARY KEY,
     code              VARCHAR(20)  NOT NULL UNIQUE,
-    name              VARCHAR(100) NOT NULL,
+    name              VARCHAR(100) NOT NULL UNIQUE,      -- 엑셀 업로드 시 부서명으로 매칭
     parent_id         INT REFERENCES department(id),
     head_employee_id  INT                              -- FK는 employee 생성 후 추가
 );
@@ -32,11 +32,14 @@ CREATE TABLE employee (                        -- 직원
     emp_no         VARCHAR(20)  NOT NULL UNIQUE,
     name           VARCHAR(50)  NOT NULL,
     department_id  INT NOT NULL REFERENCES department(id),
-    job_level_id   INT NOT NULL REFERENCES job_level(id),
+    job_level_id   INT REFERENCES job_level(id),         -- 평가 대상자는 필수 (업로드 시 검증)
     email          VARCHAR(200) UNIQUE,
-    hire_date      DATE NOT NULL,
+    hire_date      DATE,
     status         VARCHAR(10)  NOT NULL DEFAULT 'ACTIVE'
-                   CHECK (status IN ('ACTIVE', 'LEAVE', 'RESIGNED'))
+                   CHECK (status IN ('ACTIVE', 'LEAVE', 'RESIGNED')),
+    job_title      VARCHAR(50),                          -- 직책 (팀장 등, 엑셀 업로드 값)
+    eval_type      VARCHAR(30),                          -- 평가유형 원문 (엑셀 업로드 값, 예: 정상/휴직)
+    eval_target    BOOLEAN NOT NULL DEFAULT true         -- 평가 대상 여부 (평가유형 '정상'만 true)
 );
 
 -- 로그인 계정 (ID/비밀번호). 로그인 ID = 사번, 비밀번호는 scrypt 해시만 저장
@@ -80,7 +83,9 @@ CREATE TABLE evaluation_cycle (                -- 평가주기 (연 1회)
     start_date          DATE NOT NULL,
     end_date            DATE NOT NULL,
     comp_effective_date DATE NOT NULL,                  -- 차년도 연봉 적용일 (예: N+1.01.01)
-    top_grade_ratio_limit NUMERIC(5,4)                  -- 상위평가(A·B) 비율 상한. 초과 시 경고 (NULL = 제한 없음)
+    top_grade_ratio_limit NUMERIC(5,4),                 -- 상위평가(A·B) 비율 상한. 초과 시 경고 (NULL = 제한 없음)
+    setup_confirmed_at  TIMESTAMPTZ,                    -- '평가화면 최종확정' 시각 (대상자·연봉 업로드 완료 후)
+    setup_confirmed_by  TEXT
 );
 
 -- 개인 평가등급 (5등급: A~E) – 주기별로 관리
@@ -335,11 +340,13 @@ RETURNS SETOF INT AS $$
      WHERE e.department_id = p_department_id
        AND e.id IS DISTINCT FROM d.head_employee_id
        AND e.status = 'ACTIVE'
+       AND e.eval_target
     UNION
     SELECT c.head_employee_id
       FROM department c
+      JOIN employee h ON h.id = c.head_employee_id
      WHERE c.parent_id = p_department_id
-       AND c.head_employee_id IS NOT NULL;
+       AND h.eval_target;
 $$ LANGUAGE sql STABLE;
 
 -- 직원이 평가받는 단위: 부서장이면 상위 부서, 아니면 소속 부서
@@ -575,6 +582,30 @@ BEGIN
     RETURN v_cnt;
 END;
 $$ LANGUAGE plpgsql;
+
+-- ---------------------------------------------------------------------
+-- 8. 엑셀 업로드 (평가대상자 · 연봉)
+-- ---------------------------------------------------------------------
+-- 업로드한 원본 파일 (미리보기 → 적용 사이에 보관, 적용 후 삭제)
+CREATE TABLE import_staging (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    kind        VARCHAR(20) NOT NULL CHECK (kind IN ('EMPLOYEE', 'SALARY')),
+    file_name   TEXT NOT NULL,
+    content     BYTEA NOT NULL,
+    created_by  TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 적용 이력 (누가 언제 어떤 파일로 몇 건을 반영했는지)
+CREATE TABLE import_log (
+    id          BIGSERIAL PRIMARY KEY,
+    cycle_id    INT NOT NULL REFERENCES evaluation_cycle(id),
+    kind        VARCHAR(20) NOT NULL,
+    file_name   TEXT NOT NULL,
+    summary     JSONB NOT NULL,
+    applied_by  TEXT NOT NULL,
+    applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- ---------------------------------------------------------------------
 -- 인덱스

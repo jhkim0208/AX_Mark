@@ -35,7 +35,8 @@ erDiagram
 
 | 영역 | 테이블 | 설명 |
 |------|--------|------|
-| 인사 | `department`, `job_level`, `employee` | 조직(본부-팀/Lab 계층)·직급(CL2/CL3/CL4)·직원 마스터 |
+| 인사 | `department`, `job_level`, `employee` | 조직(본부-팀/Lab 계층)·직급(CL2/CL3/CL4)·직원 마스터. `employee.eval_type`(엑셀 평가유형 원문)·`eval_target`(평가 대상 여부 – '정상'만 true)·`job_title`(직책) |
+| 업로드 | `import_staging`, `import_log` | 인사팀이 올린 엑셀 원본(미리보기~반영 사이 임시 보관, 반영 시 삭제)과 반영 이력(요약 JSON) |
 | 계정 | `user_account` | 로그인 계정 (ID = 사번, scrypt 비밀번호 해시, 변경 강제 여부, 실패 횟수·잠금, 최근 로그인) |
 | 권한 | `app_user_role` | 시스템 역할 (`HR_ADMIN` = 인사팀 부서별 현황 조회). 부서장 권한은 `department.head_employee_id` 로 자동 부여 |
 | 평가 | `evaluation_cycle` | 연 1회 평가주기. 상태: DRAFT → OPEN → CALIBRATION → CONFIRMED → CLOSED. `top_grade_ratio_limit` = 상위평가(A·B) 비율 상한 (40%) |
@@ -104,7 +105,11 @@ erDiagram
 
 ## 5. 처리 흐름
 
-1. **정책 설정 (DRAFT)** – 인사팀이 주기, 등급, `comp_policy`, `comp_rule`, `salary_band` 등록
+1. **평가 준비 (DRAFT)** – 인사팀 `/hr/setup`
+   - 평가대상자 엑셀 → 부서명별 부서 생성, 사번·이름·직급 반영, 평가유형 '정상'만 `eval_target`
+   - 연봉 엑셀 → 사번 일치 직원의 `employee_compensation`(평가연도) 입력
+   - 부서장 지정 → **평가화면 최종확정**: `evaluation_cycle.status = OPEN`, `setup_confirmed_at/by` 기록, 부서장 계정 발급
+   - 정책(`comp_policy`, `comp_rule`, `salary_band` 등)은 현재 SQL로 등록
 2. **평가 입력 (OPEN)** – 부서장 웹 화면
    - 등급 선택 시 `PUT /api/departments/{부서}/evaluations/{직원}` → 임시저장 후 `fn_simulate_comp()` 결과를 행에 즉시 반영
    - 화면 하단에서 상위평가(A·B) 비율 확인 – `evaluation_cycle.top_grade_ratio_limit`(40%) 초과 시 경고

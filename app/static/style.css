@@ -441,3 +441,49 @@ tbody tr.unsaved td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
   .topbar { flex-direction: column; align-items: flex-start; padding: 16px; }
   main { padding: 16px; }
 }
+
+/* ---------- 인사팀 평가 준비 ---------- */
+.banner-info { background: var(--accent-soft); color: var(--accent); }
+.setup { max-width: 1100px; }
+.setup .card { margin-bottom: 16px; }
+.step { padding-bottom: 8px; }
+.step.locked .step-body { opacity: .7; }
+.step-head { display: flex; align-items: flex-start; gap: 12px; padding: 16px 20px 8px; }
+.step-head > div { flex: 1; }
+.step-head h2 { margin: 0 0 4px; font-size: 17px; }
+.step-head .sub { margin: 0; }
+.step-no { flex: none; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff;
+           display: grid; place-items: center; font-weight: 700; }
+.step.locked .step-no { background: var(--muted); }
+.step-body { padding: 4px 20px 12px; }
+.file-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 8px 0; }
+.file-btn { display: inline-block; padding: 8px 14px; border-radius: 8px; background: var(--accent); color: #fff;
+            cursor: pointer; font-weight: 600; font-size: 13px; }
+.file-btn input { display: none; }
+.map-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px 16px; margin: 8px 0 12px; }
+.map-item { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.map-item select, .map-item input { font-size: 13px; padding: 6px 8px; }
+.map-item.missing select, select.missing { border-color: var(--up); }
+.req { color: var(--up); }
+.sub-title { font-size: 14px; margin: 12px 0 0; }
+.sample-table { max-height: 220px; overflow: auto; font-size: 12px; }
+.sample-table th, .sample-table td { white-space: nowrap; }
+.sample-table .mapped { background: var(--accent-soft); }
+.plan { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; }
+.plan .dialog-stats { padding: 0 0 8px; }
+.stat.good strong { color: var(--accent); }
+.stat.warn strong { color: var(--warn); }
+.warn-text { color: var(--warn); }
+.issue { margin: 8px 0; }
+.issue summary { cursor: pointer; font-size: 13px; color: var(--warn); font-weight: 600; }
+.issue .table-wrap { max-height: 240px; overflow: auto; font-size: 12px; }
+.apply-row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.checklist { list-style: none; padding: 0; margin: 12px 0 0; display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 13px; }
+.checklist .ok { color: var(--accent); }
+.checklist .no { color: var(--up); }
+.dialog-foot { display: flex; justify-content: flex-end; padding: 12px 20px 16px; }
+@media (max-width: 700px) {
+  .step-head { flex-wrap: wrap; }
+  .step-body, .step-head { padding-left: 16px; padding-right: 16px; }
+}
+#confirm-body select[data-dept] { min-width: 260px; }

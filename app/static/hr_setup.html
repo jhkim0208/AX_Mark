@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>평가 준비 · 업적평가</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>평가 준비</h1>
+      <p class="sub" id="cycle-label">불러오는 중…</p>
+    </div>
+    <div class="topbar-right">
+      <div class="user-box" id="user-box"></div>
+    </div>
+  </header>
+
+  <main class="setup">
+    <div id="setup-banner" class="banner"></div>
+
+    <!-- 1. 평가대상자 -->
+    <section class="card step" id="step-employee">
+      <div class="step-head">
+        <span class="step-no">1</span>
+        <div>
+          <h2>평가대상자 업로드</h2>
+          <p class="sub">회사 인사 엑셀을 그대로 올리세요. <b>부서명</b>으로 부서를 만들고 <b>사번 · 이름 · 직급(CL2~CL4)</b>을 옮기며,
+            <b>평가유형이 '정상'</b>인 사람만 평가 대상으로 표시합니다.</p>
+        </div>
+        <span class="chip" id="chip-employee">-</span>
+      </div>
+      <div class="step-body" data-kind="employee"></div>
+    </section>
+
+    <!-- 2. 연봉 -->
+    <section class="card step" id="step-salary">
+      <div class="step-head">
+        <span class="step-no">2</span>
+        <div>
+          <h2>연봉 업로드</h2>
+          <p class="sub">연봉 엑셀을 올리면 <b>사번</b>이 같은 사람을 찾아 <b>올해 연봉</b>을 입력합니다. (1단계 완료 후 사용 가능)</p>
+        </div>
+        <span class="chip" id="chip-salary">-</span>
+      </div>
+      <div class="step-body" data-kind="salary"></div>
+    </section>
+
+    <!-- 3. 최종확정 -->
+    <section class="card step" id="step-confirm">
+      <div class="step-head">
+        <span class="step-no">3</span>
+        <div>
+          <h2>부서장 지정 · 평가화면 최종확정</h2>
+          <p class="sub">부서별 부서장(평가자)을 확인한 뒤 최종확정하면 부서장 계정이 발급되고 평가 입력이 시작됩니다. (2단계 완료 후 사용 가능)</p>
+        </div>
+        <span class="chip" id="chip-confirm">-</span>
+      </div>
+      <div class="step-body" id="confirm-body"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>업로드 이력</h2></div>
+      <div class="table-wrap"><table><thead><tr><th>일시</th><th>구분</th><th>파일</th><th>결과</th><th>처리자</th></tr></thead>
+        <tbody id="log-rows"></tbody></table></div>
+    </section>
+    <p id="status-msg" class="status-msg"></p>
+  </main>
+
+  <!-- 최종확정 결과: 부서장 임시 비밀번호 -->
+  <dialog id="accounts-dialog" class="dialog" aria-labelledby="acc-title">
+    <div class="dialog-head">
+      <div>
+        <h2 id="acc-title">평가화면 최종확정 완료</h2>
+        <p class="sub">새로 발급된 부서장 계정입니다. <b>이 창을 닫으면 임시 비밀번호를 다시 볼 수 없으니</b> 지금 내려받아 각 부서장에게 전달하세요.
+          (첫 로그인 시 비밀번호 변경이 강제됩니다)</p>
+      </div>
+      <button type="button" class="icon-btn dialog-close" id="acc-close" aria-label="닫기" title="닫기">✕</button>
+    </div>
+    <div class="table-wrap dialog-table">
+      <table><thead><tr><th>부서</th><th>사번(아이디)</th><th>이름</th><th>임시 비밀번호</th></tr></thead>
+        <tbody id="acc-rows"></tbody></table>
+    </div>
+    <div class="dialog-foot"><button type="button" id="acc-download">CSV 내려받기</button></div>
+  </dialog>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/hr_setup.js"></script>
+</body>
+</html>

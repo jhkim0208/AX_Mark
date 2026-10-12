@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import auth
+from . import auth, setup_api
 from .auth import User, current_user, hr_user
 from .db import close_pool, get_pool
 
@@ -31,6 +31,7 @@ app.add_middleware(
     https_only=auth.settings.https_only,
 )
 app.include_router(auth.router)
+app.include_router(setup_api.router)
 
 
 @app.middleware("http")
@@ -175,6 +176,15 @@ def index(request: Request):
     if user is None or user.must_change_password or not user.head_of:
         return RedirectResponse("/login" if user is None else auth.home_path(user))
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/hr/setup")
+def hr_setup_page(request: Request):
+    """인사팀 평가 준비: 평가대상자·연봉 엑셀 업로드 → 부서장 지정 → 최종확정"""
+    user = _page_user(request)
+    if user is None or user.must_change_password or not user.is_hr:
+        return RedirectResponse("/login" if user is None else auth.home_path(user))
+    return FileResponse(STATIC_DIR / "hr_setup.html")
 
 
 @app.get("/hr")

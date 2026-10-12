@@ -122,9 +122,12 @@ UPDATE employee SET email = lower(emp_no) || '@example.com';
 -- 평가주기 / 등급 / 정책
 -- ---------------------------------------------------------------------
 -- 상위평가(A·B) 비율이 40% 를 넘으면 부서장·인사팀 화면에 '초과' 경고 (A 단독 10% 초과도 경고)
+-- 더미 데이터는 대상자·연봉이 이미 준비된 상태이므로 '평가화면 최종확정'까지 끝난 것으로 둔다
 INSERT INTO evaluation_cycle (id, eval_year, name, status, start_date, end_date,
-                              comp_effective_date, top_grade_ratio_limit)
-VALUES (1, 2026, '2026년 업적평가', 'OPEN', '2026-11-01', '2026-12-15', '2027-01-01', 0.40);
+                              comp_effective_date, top_grade_ratio_limit,
+                              setup_confirmed_at, setup_confirmed_by)
+VALUES (1, 2026, '2026년 업적평가', 'OPEN', '2026-11-01', '2026-12-15', '2027-01-01', 0.40,
+        now(), 'SEED');
 ALTER SEQUENCE evaluation_cycle_id_seq RESTART WITH 2;
 
 -- 개인 평가등급: A·B·C 양수 / D 동결 / E 음수, 인센티브는 A·B 만 지급, 상위평가 = A·B

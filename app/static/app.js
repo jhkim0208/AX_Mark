@@ -495,6 +495,10 @@ async function init() {
   const statusLabel = { DRAFT: "준비중", OPEN: "입력중", CALIBRATION: "조정중", CONFIRMED: "확정", CLOSED: "마감" };
   $("cycle-label").textContent =
     `${cycle.name} · ${statusLabel[cycle.status] || cycle.status} · ${cycle.eval_year + 1}년 처우 반영`;
+  if (cycle.status === "DRAFT") {
+    $("cycle-banner").hidden = false;
+    $("cycle-banner").textContent = "평가 준비 중입니다 – 인사팀이 평가화면을 최종확정하면 등급을 입력할 수 있습니다.";
+  }
   $("base-up").textContent = policy ? pct(policy.base_up_rate) : "-";
   $("incentive-grades").textContent =
     state.ctx.grades.filter((g) => g.incentive_eligible).map((g) => g.code).join("·") || "없음";
