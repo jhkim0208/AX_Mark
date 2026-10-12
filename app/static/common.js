@@ -39,9 +39,9 @@ async function logout() {
 function renderUserBox(user, current) {
   const roles = [user.head_of.length ? "부서장" : null, user.is_hr ? "인사팀" : null].filter(Boolean);
   const links = [
-    user.head_of.length ? { href: "/", label: "부서 평가하기" } : null,
+    user.is_hr ? { href: "/hr/setup", label: "평가준비" } : null,
     user.is_hr ? { href: "/hr", label: "부서별 현황" } : null,
-    user.is_hr ? { href: "/hr/setup", label: "평가 준비" } : null,
+    user.head_of.length ? { href: "/", label: "평가하기" } : null,
   ].filter(Boolean);
   $("user-box").innerHTML = `
     ${links.length > 1 ? `<nav class="nav">${links
